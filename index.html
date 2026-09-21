@@ -1,0 +1,2552 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🌳 Combate a Queimadas e Preservação da Amazônia</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            amazon: {
+              50: '#f0fdf4',
+              100: '#dcfce7',
+              200: '#bbf7d0',
+              300: '#86efac',
+              400: '#4ade80',
+              500: '#22c55e',
+              600: '#16a34a',
+              700: '#15803d',
+              800: '#166534',
+              900: '#14532d',
+              950: '#052e16',
+            },
+            fire: {
+              500: '#f97316',
+              600: '#ea580c',
+              700: '#c2410c',
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Google Fonts & Font Awesome Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+  <!-- React & ReactDOM & Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Canvas Confetti -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+
+  <!-- Supabase Realtime Engine -->
+  <script type="module">
+    import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+    const SUPABASE_URL =
+      "https://uphdilhnxeytunuilimo.supabase.co";
+
+    const SUPABASE_KEY =
+      "sb_publishable_mVgXx_dMlUAvfnqHQ-6tPg_sO4kIvcc";
+
+    const supabase = createClient(
+      SUPABASE_URL,
+      SUPABASE_KEY,
+      {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: false
+        }
+      }
+    );
+
+    function sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function normalizePlayer(row) {
+      return {
+        score: row.score ?? 0,
+        streak: row.streak ?? 0,
+        hasAnswered: row.has_answered ?? false,
+        selectedIdx: row.selected_answer ?? null,
+        isCorrect: row.is_correct ?? null,
+        lastPoints: row.last_points ?? 0,
+
+        // Dados internos usados pelo adaptador.
+        __id: row.id,
+        __userId: row.user_id
+      };
+    }
+
+    function normalizeRoom(room, players = []) {
+      if (!room) return null;
+
+      const playerMap = {};
+
+      for (const p of players || []) {
+        playerMap[p.nickname] = normalizePlayer(p);
+      }
+
+      let questionStartTime = 0;
+
+      if (room.question_started_at) {
+        const parsed = new Date(room.question_started_at).getTime();
+
+        if (!Number.isNaN(parsed)) {
+          questionStartTime = parsed;
+        }
+      }
+
+      return {
+        __id: room.id,
+
+        pin: room.pin,
+        hostName: room.host_name,
+        status: room.status,
+
+        questions: Array.isArray(room.questions)
+          ? room.questions
+          : [],
+
+        currentQIndex: room.current_question ?? 0,
+
+        questionStartTime,
+
+        players: playerMap
+      };
+    }
+
+    window.AmazoniaDB = {
+      supabase,
+
+      currentUser: null,
+
+      channels: new Map(),
+
+      async initAuth() {
+        if (this.currentUser) {
+          return this.currentUser;
+        }
+
+        let {
+          data: { session }
+        } = await supabase.auth.getSession();
+
+        if (!session) {
+          const { data, error } =
+            await supabase.auth.signInAnonymously();
+
+          if (error) {
+            console.error(
+              "Erro no login anônimo:",
+              error
+            );
+
+            throw new Error(
+              "Não foi possível conectar ao servidor multiplayer."
+            );
+          }
+
+          session = data.session;
+        }
+
+        this.currentUser = session.user;
+
+        return this.currentUser;
+      },
+
+      async getRoomRow(pin) {
+        const { data, error } = await supabase
+          .from("quiz_rooms")
+          .select("*")
+          .eq("pin", String(pin))
+          .maybeSingle();
+
+        if (error) {
+          console.error(
+            "Erro ao localizar sala:",
+            error
+          );
+          return null;
+        }
+
+        return data;
+      },
+
+      async getPlayers(roomId) {
+        const { data, error } = await supabase
+          .from("quiz_players")
+          .select("*")
+          .eq("room_id", roomId)
+          .order("joined_at", {
+            ascending: true
+          });
+
+        if (error) {
+          console.error(
+            "Erro ao carregar jogadores:",
+            error
+          );
+          return [];
+        }
+
+        return data || [];
+      },
+
+      async getRoom(pin) {
+        await this.initAuth();
+
+        const room = await this.getRoomRow(pin);
+
+        if (!room) return null;
+
+        const players =
+          await this.getPlayers(room.id);
+
+        return normalizeRoom(
+          room,
+          players
+        );
+      },
+
+      async createRoom(pin, roomData) {
+        const user = await this.initAuth();
+
+        // PIN extremamente improvável de colidir,
+        // mas verificamos mesmo assim.
+        const existing =
+          await this.getRoomRow(pin);
+
+        if (existing) {
+          throw new Error(
+            "PIN já utilizado. Gere outra sala."
+          );
+        }
+
+        const questionCount =
+          Array.isArray(roomData.questions)
+            ? roomData.questions.length
+            : 10;
+
+        const { data: room, error } =
+          await supabase
+            .from("quiz_rooms")
+            .insert({
+              pin: String(pin),
+
+              host_id: user.id,
+
+              host_name:
+                roomData.hostName,
+
+              status:
+                roomData.status || "lobby",
+
+              question_count:
+                questionCount,
+
+              current_question:
+                roomData.currentQIndex || 0,
+
+              question_started_at:
+                null,
+
+              questions:
+                roomData.questions || []
+            })
+            .select("*")
+            .single();
+
+        if (error) {
+          console.error(
+            "Erro ao criar sala:",
+            error
+          );
+          throw error;
+        }
+
+        const hostData =
+          roomData.players?.[
+            roomData.hostName
+          ] || {};
+
+        const { error: playerError } =
+          await supabase
+            .from("quiz_players")
+            .insert({
+              room_id: room.id,
+              user_id: user.id,
+
+              nickname:
+                roomData.hostName,
+
+              score:
+                hostData.score || 0,
+
+              streak:
+                hostData.streak || 0,
+
+              has_answered: false,
+
+              selected_answer: null,
+
+              is_correct: null,
+
+              last_points: 0
+            });
+
+        if (playerError) {
+          console.error(
+            "Erro ao registrar anfitrião:",
+            playerError
+          );
+
+          // Evita deixar sala órfã.
+          await supabase
+            .from("quiz_rooms")
+            .delete()
+            .eq("id", room.id);
+
+          throw playerError;
+        }
+
+        return await this.getRoom(pin);
+      },
+
+      async syncPlayers(
+        room,
+        desiredPlayers
+      ) {
+        const user =
+          await this.initAuth();
+
+        const current =
+          await this.getPlayers(room.id);
+
+        const currentByName =
+          Object.fromEntries(
+            current.map(p => [
+              p.nickname,
+              p
+            ])
+          );
+
+        const desiredNames =
+          Object.keys(
+            desiredPlayers || {}
+          );
+
+        // ----------------------------------------------------
+        // REMOVE jogadores que desapareceram do objeto.
+        // Só funcionará para o próprio jogador ou para o host,
+        // conforme nossas políticas RLS.
+        // ----------------------------------------------------
+
+        for (const existing of current) {
+          if (
+            !desiredNames.includes(
+              existing.nickname
+            )
+          ) {
+            const { error } =
+              await supabase
+                .from("quiz_players")
+                .delete()
+                .eq("id", existing.id);
+
+            if (error) {
+              console.error(
+                "Erro ao remover jogador:",
+                existing.nickname,
+                error
+              );
+              throw error;
+            }
+          }
+        }
+
+        // ----------------------------------------------------
+        // INSERT / UPDATE
+        // ----------------------------------------------------
+
+        for (
+          const nickname
+          of desiredNames
+        ) {
+          const value =
+            desiredPlayers[nickname] || {};
+
+          const existing =
+            currentByName[nickname];
+
+          const payload = {
+            score:
+              value.score ?? 0,
+
+            streak:
+              value.streak ?? 0,
+
+            has_answered:
+              value.hasAnswered ?? false,
+
+            selected_answer:
+              value.selectedIdx ?? null,
+
+            is_correct:
+              value.isCorrect ?? null,
+
+            last_points:
+              value.lastPoints ?? 0
+          };
+
+          if (existing) {
+            const { error } =
+              await supabase
+                .from("quiz_players")
+                .update(payload)
+                .eq("id", existing.id);
+
+            if (error) {
+              console.error(
+                "Erro ao atualizar jogador:",
+                nickname,
+                error
+              );
+              throw error;
+            }
+
+            continue;
+          }
+
+          /*
+           * Novo jogador:
+           * somente o próprio usuário pode criar
+           * sua linha devido ao RLS.
+           */
+          const { error } =
+            await supabase
+              .from("quiz_players")
+              .insert({
+                room_id: room.id,
+
+                user_id: user.id,
+
+                nickname,
+
+                ...payload
+              });
+
+          if (error) {
+            console.error(
+              "Erro ao adicionar jogador:",
+              nickname,
+              error
+            );
+
+            if (
+              error.code === "23505"
+            ) {
+              throw new Error(
+                "Esse apelido já está sendo usado nessa sala."
+              );
+            }
+
+            throw error;
+          }
+        }
+      },
+
+      async updateNestedPlayer(
+        room,
+        nickname,
+        field,
+        value
+      ) {
+        const map = {
+          hasAnswered:
+            "has_answered",
+
+          selectedIdx:
+            "selected_answer",
+
+          isCorrect:
+            "is_correct",
+
+          lastPoints:
+            "last_points",
+
+          streak:
+            "streak",
+
+          score:
+            "score"
+        };
+
+        const dbField =
+          map[field];
+
+        if (!dbField) {
+          return;
+        }
+
+        const { error } =
+          await supabase
+            .from("quiz_players")
+            .update({
+              [dbField]: value
+            })
+            .eq(
+              "room_id",
+              room.id
+            )
+            .eq(
+              "nickname",
+              nickname
+            );
+
+        if (error) {
+          console.error(
+            "Erro ao atualizar jogador:",
+            nickname,
+            field,
+            error
+          );
+          throw error;
+        }
+      },
+
+      async updateRoom(
+        pin,
+        updateData
+      ) {
+        await this.initAuth();
+
+        const room =
+          await this.getRoomRow(pin);
+
+        if (!room) {
+          throw new Error(
+            "Sala não encontrada."
+          );
+        }
+
+        const roomPayload = {};
+
+        // Atualização completa dos jogadores
+        if (
+          Object.prototype.hasOwnProperty.call(
+            updateData,
+            "players"
+          )
+        ) {
+          await this.syncPlayers(
+            room,
+            updateData.players
+          );
+        }
+
+        // Atualizações no formato:
+        // players.Maria.score
+        const nestedUpdates = [];
+
+        for (
+          const [key, value]
+          of Object.entries(updateData)
+        ) {
+          if (
+            key.startsWith("players.")
+          ) {
+            const parts =
+              key.split(".");
+
+            if (
+              parts.length >= 3
+            ) {
+              const field =
+                parts.pop();
+
+              parts.shift();
+
+              const nickname =
+                parts.join(".");
+
+              nestedUpdates.push(
+                this.updateNestedPlayer(
+                  room,
+                  nickname,
+                  field,
+                  value
+                )
+              );
+            }
+
+            continue;
+          }
+
+          switch (key) {
+            case "status":
+              roomPayload.status =
+                value;
+              break;
+
+            case "questions":
+              roomPayload.questions =
+                value;
+
+              roomPayload.question_count =
+                Array.isArray(value)
+                  ? value.length
+                  : room.question_count;
+
+              break;
+
+            case "currentQIndex":
+              roomPayload.current_question =
+                value;
+              break;
+
+            case "questionStartTime":
+              roomPayload.question_started_at =
+                value
+                  ? new Date(value)
+                      .toISOString()
+                  : null;
+              break;
+
+            case "hostName":
+              roomPayload.host_name =
+                value;
+              break;
+          }
+        }
+
+        if (
+          nestedUpdates.length
+        ) {
+          await Promise.all(
+            nestedUpdates
+          );
+        }
+
+        if (
+          Object.keys(roomPayload)
+            .length
+        ) {
+          const { error } =
+            await supabase
+              .from("quiz_rooms")
+              .update(roomPayload)
+              .eq("id", room.id);
+
+          if (error) {
+            console.error(
+              "Erro ao atualizar sala:",
+              error
+            );
+            throw error;
+          }
+        }
+
+        return await this.getRoom(pin);
+      },
+
+      listenRoom(pin, onUpdate) {
+        let active = true;
+        let channel = null;
+        let roomId = null;
+
+        const refresh = async () => {
+          if (!active) return;
+
+          try {
+            const data =
+              await this.getRoom(pin);
+
+            if (
+              active &&
+              data
+            ) {
+              onUpdate(data);
+            }
+          } catch (e) {
+            console.error(
+              "Erro ao sincronizar sala:",
+              e
+            );
+          }
+        };
+
+        const start = async () => {
+          try {
+            await this.initAuth();
+
+            const room =
+              await this.getRoomRow(pin);
+
+            if (
+              !active ||
+              !room
+            ) {
+              return;
+            }
+
+            roomId = room.id;
+
+            await refresh();
+
+            channel =
+              supabase.channel(
+                "quiz-room-" +
+                roomId +
+                "-" +
+                Math.random()
+                  .toString(36)
+                  .slice(2)
+              );
+
+            channel.on(
+              "postgres_changes",
+              {
+                event: "*",
+                schema: "public",
+                table: "quiz_rooms",
+                filter:
+                  "id=eq." +
+                  roomId
+              },
+              refresh
+            );
+
+            channel.on(
+              "postgres_changes",
+              {
+                event: "*",
+                schema: "public",
+                table: "quiz_players",
+                filter:
+                  "room_id=eq." +
+                  roomId
+              },
+              refresh
+            );
+
+            channel.subscribe(
+              status => {
+                console.log(
+                  "Supabase Realtime:",
+                  status
+                );
+              }
+            );
+          } catch (e) {
+            console.error(
+              "Falha no Realtime:",
+              e
+            );
+          }
+        };
+
+        start();
+
+        /*
+         * Realtime é o mecanismo principal.
+         * Polling é apenas fallback caso uma conexão móvel
+         * perca temporariamente o WebSocket.
+         */
+        const fallback =
+          setInterval(
+            refresh,
+            5000
+          );
+
+        return () => {
+          active = false;
+
+          clearInterval(
+            fallback
+          );
+
+          if (channel) {
+            supabase.removeChannel(
+              channel
+            );
+          }
+        };
+      }
+    };
+
+    // Inicializa a sessão antecipadamente.
+    window.AmazoniaDB
+      .initAuth()
+      .then(user => {
+        console.log(
+          "✅ Supabase conectado:",
+          user.id
+        );
+      })
+      .catch(err => {
+        console.error(
+          "❌ Supabase:",
+          err
+        );
+      });
+
+  </script>
+</head>
+<body class="bg-stone-50 text-stone-800 font-sans antialiased selection:bg-amazon-500 selection:text-white">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo } = React;
+
+    // --- QUESTION BANK ---
+    const INITIAL_QUESTIONS = [
+      {
+        id: 1,
+        question: "Qual é o principal fenômeno meteorológico gerado pela evapotranspiração da Floresta Amazônica?",
+        options: ["Ventos Alísios do Sul", "Rios Voadores", "Frentes Frias Polares", "Ciclones Tropicais"],
+        correctIndex: 1,
+        explanation: "Os 'Rios Voadores' são cursos de água atmosféricos invisíveis que levam umidade da Bacia Amazônica para o Centro-Oeste, Sudeste e Sul do Brasil.",
+        category: "Amazônia",
+        difficulty: "Médio"
+      },
+      {
+        id: 2,
+        question: "Qual porcentagem mínima da propriedade rural na Amazônia Legal deve ser mantida como Reserva Legal segundo o Código Florestal?",
+        options: ["20%", "35%", "50%", "80%"],
+        correctIndex: 3,
+        explanation: "O Código Florestal Brasileiro exige que propriedades rurais no bioma Amazônia preservem 80% de sua área nativa como Reserva Legal.",
+        category: "Preservação",
+        difficulty: "Difícil"
+      },
+      {
+        id: 3,
+        question: "Qual é a causa direta da imensa maioria das queimadas na Floresta Amazônica?",
+        options: ["Combustão espontânea pelo sol", "Ação humana associada ao desmatamento", "Erupções vulcânicas", "Queda frequente de raios"],
+        correctIndex: 1,
+        explanation: "A Floresta Amazônica é úmida e não pega fogo naturally de forma espontânea. As queimadas são iniciadas pela ação humana para limpeza de pastos e abertura de áreas desmatadas.",
+        category: "Queimadas",
+        difficulty: "Fácil"
+      },
+      {
+        id: 4,
+        question: "Qual sistema do INPE fornece alertas diários em tempo real para orientar a fiscalização do desmatamento?",
+        options: ["PRODES", "DETER", "SIGAM", "BDQueimadas"],
+        correctIndex: 1,
+        explanation: "O DETER (Detecção de Desmatamento em Tempo Real) emite alertas diários para direcionar a fiscalização em campo do IBAMA e ICMBio.",
+        category: "Preservação",
+        difficulty: "Médio"
+      },
+      {
+        id: 5,
+        question: "Por que a Amazônia desempenha um papel crucial no combate às mudanças climáticas globais?",
+        options: ["Ela reflete toda a luz solar de volta ao espaço", "Ela estoca bilhões de toneladas de carbono na sua biomassa", "Ela produz o ozônio necessário para a atmosfera", "Ela resfria os oceanos do sul"],
+        correctIndex: 1,
+        explanation: "A floresta retém enormes quantidades de dióxido de carbono. Quando queimada ou desmatada, esse carbono é liberado na atmosfera, acelerando o aquecimento global.",
+        category: "Clima",
+        difficulty: "Fácil"
+      },
+      {
+        id: 6,
+        question: "Qual destas espécies de mamíferos aquáticos é endêmica dos rios da Bacia Amazônica e ameaçada pelo garimpo?",
+        options: ["Boto-Cor-de-Rosa", "Baleia-Jubarte", "Peixe-Boi Marinho", "Foca-Monge"],
+        correctIndex: 0,
+        explanation: "O Boto-Cor-de-Rosa vive exclusivamente nas bacias dos rios Amazônia e Orinoco e sofre com a poluição por mercúrio e contaminação do garimpo.",
+        category: "Biodiversidade",
+        difficulty: "Fácil"
+      },
+      {
+        id: 7,
+        question: "Qual das alternativas representa o impacto da fumaça das queimadas na saúde pública da população?",
+        options: ["Aumento da oxigenação pulmonar", "Problemas respiratórios severos devido às partículas PM2.5", "Melhoria na qualidade do sono", "Redução de alergias"],
+        correctIndex: 1,
+        explanation: "O material particulado fino (PM2.5) presente na fumaça penetra profundamente nos pulmões, provocando crises respiratórias sérias em crianças e idosos.",
+        category: "Queimadas",
+        difficulty: "Médio"
+      },
+      {
+        id: 8,
+        question: "O que é o processo conhecido como 'Savanização da Amazônia'?",
+        options: ["Plantação de savanas artificiais para pecuária", "Transformação da floresta tropical em uma vegetação seca degradada pelo desmatamento e aquecimento", "Crescimento de árvores gigantes", "Aumento no volume dos rios"],
+        correctIndex: 1,
+        explanation: "Se o desmatamento ultrapassar um ponto de não retorno (tipping point de 20-25%), a floresta perde capacidade de produzir chuva e se degrada em uma savana empobrecida.",
+        category: "Clima",
+        difficulty: "Difícil"
+      },
+      {
+        id: 9,
+        question: "Qual órgão é o responsável federal pelas brigadas do Prevfogo no combate direto aos incêndios florestais?",
+        options: ["IBAMA", "INPA", "ANATEL", "CONAB"],
+        correctIndex: 0,
+        explanation: "O IBAMA coordena o Centro Nacional de Prevenção e Combate aos Incêndios Florestais (Prevfogo), atuando no combate direto ao fogo.",
+        category: "Preservação",
+        difficulty: "Médio"
+      },
+      {
+        id: 10,
+        question: "A Amazônia abriga aproximadamente qual fração da biodiversidade conhecida do planeta Terra?",
+        options: ["1 em cada 10 espécies conhecidas", "50% de todos os seres vivos", "Menos de 1%", "90% das mamíferos terrestres"],
+        correctIndex: 0,
+        explanation: "Estima-se que a Amazônia seja o lar de pelo menos 10% (1 em cada 10) de todas as espécies de plantas e animais descritas no mundo.",
+        category: "Biodiversidade",
+        difficulty: "Médio"
+      },
+      {
+        id: 11,
+        question: "Qual é a função do sistema PRODES mantido pelo INPE?",
+        options: ["Prever a chuva diária em Manaus", "Calcular a taxa anual consolidada de desmatamento por corte raso na Amazônia", "Monitorar navios no Oceano Atlântico", "Contar o número de turistas"],
+        correctIndex: 1,
+        explanation: "O PRODES calcula a taxa oficial anual de desmatamento por corte raso no Brasil com altíssima precisão espacial.",
+        category: "Preservação",
+        difficulty: "Difícil"
+      },
+      {
+        id: 12,
+        question: "Qual destas ações individuais ajuda diretamente no combate ao desmatamento ilegal e queimadas?",
+        options: ["Exigir rastreabilidade da madeira e carne consumidas", "Aumentar o desperdício de papel", "Realizar queimadas sem autorização ambiental", "Ignorar alertas de focos de incêndio"],
+        correctIndex: 0,
+        explanation: "O consumo consciente de produtos certificados evita financiar a cadeia ilegal de desmatamento e grilagem de terras.",
+        category: "Recursos naturais",
+        difficulty: "Fácil"
+      }
+    ];
+
+    // --- COMPONENT: ERROR BOUNDARY ---
+    class ErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { hasError: false };
+      }
+      static getDerivedStateFromError() {
+        return { hasError: true };
+      }
+      componentDidCatch(err, info) {
+        console.error("ErrorBoundary:", err, info);
+      }
+      render() {
+        if (this.state.hasError) {
+          return (
+            <div className="min-h-screen bg-stone-900 text-white flex items-center justify-center p-6 text-center">
+              <div className="max-w-md bg-stone-800 p-8 rounded-3xl border border-stone-700 shadow-2xl space-y-4">
+                <div className="text-5xl">🌳</div>
+                <h2 className="text-xl font-bold">Ocorreu um ajuste temporário</h2>
+                <p className="text-sm text-stone-300">Reinicie a aplicação para recarregar o sistema em estado seguro.</p>
+                <button onClick={() => window.location.reload()} className="w-full py-3 bg-amazon-600 hover:bg-amazon-500 rounded-xl font-bold text-white transition">
+                  Recarregar Aplicação
+                </button>
+              </div>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+
+    // --- MAIN APP COMPONENT ---
+    function App() {
+      const [currentTab, setCurrentTab] = useState('home');
+      const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+      const [questionsList, setQuestionsList] = useState(INITIAL_QUESTIONS);
+
+      // Quiz mode state
+      const [quizMode, setQuizMode] = useState(null); // 'solo', 'multiplayer', or null
+
+      return (
+        <div className="min-h-screen flex flex-col justify-between bg-stone-50 text-stone-800">
+          {/* NAVIGATION BAR */}
+          <header className="sticky top-0 z-50 bg-amazon-950/95 backdrop-blur-md text-white border-b border-amazon-900 shadow-lg">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+              <div className="flex items-center space-x-3 cursor-pointer" onClick={() => { setCurrentTab('home'); setQuizMode(null); }}>
+                <div className="w-10 h-10 bg-amazon-600 rounded-2xl flex items-center justify-center text-xl shadow-md border border-amazon-400/30">
+                  🌳
+                </div>
+                <div>
+                  <h1 className="font-extrabold text-base sm:text-lg tracking-tight leading-tight text-white">
+                    AMAZÔNIA <span className="text-amazon-400 font-light">PRESERVA</span>
+                  </h1>
+                  <p className="text-[10px] text-amazon-300 uppercase tracking-wider">Combate a Queimadas</p>
+                </div>
+              </div>
+
+              {/* Desktop Nav */}
+              <nav className="hidden lg:flex items-center space-x-1">
+                {[
+                  { id: 'home', label: 'Início', icon: 'fa-house' },
+                  { id: 'amazonia', label: 'Amazônia', icon: 'fa-tree' },
+                  { id: 'queimadas', label: 'Queimadas', icon: 'fa-fire' },
+                  { id: 'preservacao', label: 'Preservação', icon: 'fa-shield-halved' },
+                  { id: 'biodiversidade', label: 'Biodiversidade', icon: 'fa-paw' },
+                  { id: 'ajudar', label: 'Como Ajudar', icon: 'fa-hand-holding-heart' },
+                  { id: 'quiz', label: 'Quiz', icon: 'fa-gamepad', highlight: true },
+                  { id: 'fontes', label: 'Fontes', icon: 'fa-book' },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => { setCurrentTab(item.id); setQuizMode(null); }}
+                    className={`px-3 py-2 rounded-xl text-xs font-semibold transition-all flex items-center space-x-2 ${
+                      currentTab === item.id
+                        ? 'bg-amazon-700 text-white shadow-inner'
+                        : item.highlight
+                        ? 'bg-fire-600 text-white hover:bg-fire-500 shadow-md'
+                        : 'text-stone-300 hover:text-white hover:bg-amazon-900/60'
+                    }`}
+                  >
+                    <i className={`fa-solid ${item.icon} text-xs`}></i>
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </nav>
+
+              {/* Mobile Hamburger Button */}
+              <button
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="lg:hidden p-2 rounded-xl text-stone-300 hover:text-white hover:bg-amazon-900 focus:outline-none"
+              >
+                <i className={`fa-solid ${mobileMenuOpen ? 'fa-xmark' : 'fa-bars'} text-2xl`}></i>
+              </button>
+            </div>
+
+            {/* Mobile Nav Dropdown */}
+            {mobileMenuOpen && (
+              <div className="lg:hidden bg-amazon-950 border-b border-amazon-800 px-4 pt-2 pb-6 space-y-2">
+                {[
+                  { id: 'home', label: 'Início', icon: 'fa-house' },
+                  { id: 'amazonia', label: 'Amazônia', icon: 'fa-tree' },
+                  { id: 'queimadas', label: 'Queimadas', icon: 'fa-fire' },
+                  { id: 'preservacao', label: 'Preservação', icon: 'fa-shield-halved' },
+                  { id: 'biodiversidade', label: 'Biodiversidade', icon: 'fa-paw' },
+                  { id: 'ajudar', label: 'Como Ajudar', icon: 'fa-hand-holding-heart' },
+                  { id: 'quiz', label: 'Quiz Interativo', icon: 'fa-gamepad', highlight: true },
+                  { id: 'fontes', label: 'Fontes e Referências', icon: 'fa-book' },
+                  { id: 'admin', label: 'Painel Admin', icon: 'fa-gear' },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => {
+                      setCurrentTab(item.id);
+                      setQuizMode(null);
+                      setMobileMenuOpen(false);
+                    }}
+                    className={`w-full text-left px-4 py-3 rounded-xl text-sm font-semibold flex items-center space-x-3 ${
+                      currentTab === item.id
+                        ? 'bg-amazon-700 text-white'
+                        : item.highlight
+                        ? 'bg-fire-600 text-white'
+                        : 'text-stone-300 hover:bg-amazon-900'
+                    }`}
+                  >
+                    <i className={`fa-solid ${item.icon} text-base w-6`}></i>
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </header>
+
+          {/* MAIN CONTENT AREA */}
+          <main className="flex-grow">
+            {currentTab === 'home' && (
+              <HomeSection
+                onNavigate={(tab) => { setCurrentTab(tab); setQuizMode(null); }}
+                onStartQuiz={(mode) => { setCurrentTab('quiz'); setQuizMode(mode); }}
+              />
+            )}
+            {currentTab === 'amazonia' && <AmazoniaEduSection />}
+            {currentTab === 'queimadas' && <QueimadasEduSection />}
+            {currentTab === 'preservacao' && <PreservacaoEduSection />}
+            {currentTab === 'biodiversidade' && <BiodiversidadeEduSection />}
+            {currentTab === 'ajudar' && <ComoAjudarEduSection />}
+            {currentTab === 'fontes' && <FontesEduSection />}
+            {currentTab === 'admin' && (
+              <AdminSection questions={questionsList} setQuestions={setQuestionsList} />
+            )}
+            {currentTab === 'quiz' && (
+              <QuizHub
+                questions={questionsList}
+                initialMode={quizMode}
+                onBackHome={() => setCurrentTab('home')}
+              />
+            )}
+          </main>
+
+          {/* FOOTER */}
+          <footer className="bg-amazon-950 text-stone-400 py-12 border-t border-amazon-900 text-xs">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 grid grid-cols-1 md:grid-cols-4 gap-8">
+              <div className="space-y-3">
+                <div className="flex items-center space-x-2 text-white font-bold text-base">
+                  <span>🌳</span>
+                  <span>Combate a Queimadas</span>
+                </div>
+                <p className="text-stone-400 leading-relaxed">
+                  Plataforma educacional para conscientização sobre a biodiversidade da Amazônia e preservação ambiental.
+                </p>
+              </div>
+
+              <div>
+                <h4 className="text-white font-bold mb-3 uppercase tracking-wider text-[11px]">Navegação</h4>
+                <ul className="space-y-2">
+                  <li><button onClick={() => setCurrentTab('amazonia')} className="hover:text-amazon-400">A Floresta Amazônica</button></li>
+                  <li><button onClick={() => setCurrentTab('queimadas')} className="hover:text-amazon-400">Impactos das Queimadas</button></li>
+                  <li><button onClick={() => setCurrentTab('preservacao')} className="hover:text-amazon-400">Ações de Preservação</button></li>
+                  <li><button onClick={() => setCurrentTab('biodiversidade')} className="hover:text-amazon-400">Fauna e Flora</button></li>
+                </ul>
+              </div>
+
+              <div>
+                <h4 className="text-white font-bold mb-3 uppercase tracking-wider text-[11px]">Fontes Oficiais</h4>
+                <ul className="space-y-2">
+                  <li><a href="https://www.gov.br/inpe" target="_blank" rel="noreferrer" className="hover:text-amazon-400">INPE (PRODES / DETER)</a></li>
+                  <li><a href="https://www.gov.br/ibama" target="_blank" rel="noreferrer" className="hover:text-amazon-400">IBAMA (Prevfogo)</a></li>
+                  <li><a href="https://www.gov.br/icmbio" target="_blank" rel="noreferrer" className="hover:text-amazon-400">ICMBio</a></li>
+                  <li><a href="https://ipam.org.br" target="_blank" rel="noreferrer" className="hover:text-amazon-400">IPAM Amazônia</a></li>
+                </ul>
+              </div>
+
+              <div>
+                <h4 className="text-white font-bold mb-3 uppercase tracking-wider text-[11px]">Gestão</h4>
+                <p className="text-stone-400 mb-3">Acesse a área administrativa para gerenciamento do banco de dados de questões.</p>
+                <button
+                  onClick={() => setCurrentTab('admin')}
+                  className="px-4 py-2 bg-amazon-900 hover:bg-amazon-800 text-amazon-300 rounded-xl font-medium text-xs border border-amazon-700/50 flex items-center space-x-2"
+                >
+                  <i className="fa-solid fa-gear"></i>
+                  <span>Painel Administrativo</span>
+                </button>
+              </div>
+            </div>
+            <div className="max-w-7xl mx-auto px-4 mt-8 pt-6 border-t border-amazon-900/60 text-center text-stone-500">
+              <p>Conhecer para preservar. Proteger a Amazônia é proteger o futuro.</p>
+            </div>
+          </footer>
+        </div>
+      );
+    }
+
+    // --- HOME SECTION ---
+    function HomeSection({ onNavigate, onStartQuiz }) {
+      return (
+        <div className="space-y-16 py-8">
+          {/* HERO BANNER */}
+          <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="relative rounded-3xl overflow-hidden bg-gradient-to-br from-amazon-950 via-amazon-900 to-stone-900 text-white p-8 sm:p-12 lg:p-16 border border-amazon-800 shadow-2xl">
+              <div className="absolute -right-20 -bottom-20 opacity-10 text-[280px] select-none pointer-events-none">🌳</div>
+              <div className="relative z-10 max-w-3xl space-y-6">
+                <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-amazon-800/80 border border-amazon-600/40 text-amazon-300 text-xs font-medium">
+                  <span className="w-2 h-2 rounded-full bg-fire-500 animate-pulse"></span>
+                  <span>Conscientização & Educação Ambiental</span>
+                </div>
+                <h1 className="text-3xl sm:text-5xl font-black text-white tracking-tight leading-tight">
+                  Combate a Queimadas e Preservação da Amazônia
+                </h1>
+                <p className="text-base sm:text-lg text-stone-300 font-normal leading-relaxed">
+                  Aprenda sobre a maior floresta tropical do mundo, entenda os graves impactos do fogo e teste seus conhecimentos em um quiz interativo solo ou multiplayer em tempo real.
+                </p>
+                <div className="pt-2 flex flex-wrap gap-4">
+                  <button
+                    onClick={() => onNavigate('amazonia')}
+                    className="px-6 py-3.5 bg-amazon-600 hover:bg-amazon-500 text-white font-bold text-sm rounded-2xl shadow-lg transition flex items-center space-x-2"
+                  >
+                    <i className="fa-solid fa-book-open"></i>
+                    <span>Conhecer o Conteúdo</span>
+                  </button>
+                  <button
+                    onClick={() => onStartQuiz(null)}
+                    className="px-6 py-3.5 bg-fire-600 hover:bg-fire-500 text-white font-bold text-sm rounded-2xl shadow-lg transition flex items-center space-x-2"
+                  >
+                    <i className="fa-solid fa-gamepad"></i>
+                    <span>Jogar Quiz Interativo</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* MANTRA CALLOUT */}
+          <section className="max-w-7xl mx-auto px-4 text-center">
+            <div className="inline-block py-3 px-8 rounded-2xl bg-amazon-100 text-amazon-900 font-black text-xl sm:text-2xl border border-amazon-300 shadow-sm">
+              "Aprenda. Participe. Preserve."
+            </div>
+          </section>
+
+          {/* TOPIC CARDS GRID */}
+          <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              {[
+                { id: 'amazonia', icon: '🌳', title: 'Amazônia', subtitle: 'Biodiversidade, rios voadores e regulação do clima global.', color: 'border-amazon-500' },
+                { id: 'queimadas', icon: '🔥', title: 'Queimadas', subtitle: 'Origens antrópicas, degradação do solo e poluição do ar.', color: 'border-fire-500' },
+                { id: 'biodiversidade', icon: '🐆', title: 'Biodiversidade', subtitle: 'A maior reserva de fauna e flora do planeta Terra.', color: 'border-emerald-500' },
+                { id: 'preservacao', icon: '♻️', title: 'Preservação', subtitle: 'Monitoramento por satélite, fiscalização e sustentabilidade.', color: 'border-teal-500' },
+              ].map((card) => (
+                <div
+                  key={card.id}
+                  onClick={() => onNavigate(card.id)}
+                  className={`bg-white p-6 rounded-3xl border-2 ${card.color} shadow-sm hover:shadow-xl transition cursor-pointer group flex flex-col justify-between space-y-4`}
+                >
+                  <div>
+                    <div className="text-4xl mb-3 group-hover:scale-110 transition duration-300">{card.icon}</div>
+                    <h3 className="text-lg font-bold text-stone-900 group-hover:text-amazon-700">{card.title}</h3>
+                    <p className="text-xs text-stone-600 mt-2 leading-relaxed">{card.subtitle}</p>
+                  </div>
+                  <div className="text-xs font-bold text-amazon-700 flex items-center space-x-1 group-hover:translate-x-1 transition">
+                    <span>Ler módulo</span>
+                    <i className="fa-solid fa-arrow-right"></i>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* QUIZ PROMO BANNER */}
+          <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="bg-stone-900 text-white rounded-3xl p-8 sm:p-10 flex flex-col md:flex-row items-center justify-between gap-6 border border-stone-800">
+              <div className="space-y-2 text-center md:text-left">
+                <span className="text-xs font-bold text-fire-500 uppercase tracking-widest">Modo Desafio</span>
+                <h3 className="text-2xl font-bold">Pronto para testar seus conhecimentos?</h3>
+                <p className="text-xs text-stone-400">Jogue individualmente para treinar ou crie uma sala multiplayer com código PIN em tempo real.</p>
+              </div>
+              <div className="flex space-x-3">
+                <button
+                  onClick={() => onStartQuiz('solo')}
+                  className="px-5 py-3 bg-amazon-600 hover:bg-amazon-500 rounded-xl font-bold text-xs shadow transition"
+                >
+                  🎯 Jogar Solo
+                </button>
+                <button
+                  onClick={() => onStartQuiz('multiplayer')}
+                  className="px-5 py-3 bg-fire-600 hover:bg-fire-500 rounded-xl font-bold text-xs shadow transition"
+                >
+                  👥 Jogar Multiplayer
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      );
+    }
+
+    // --- EDUCATIONAL SECTIONS ---
+    function AmazoniaEduSection() {
+      return (
+        <div className="max-w-5xl mx-auto px-4 py-12 space-y-8">
+          <div className="border-b border-stone-200 pb-6">
+            <span className="text-xs font-bold text-amazon-600 uppercase tracking-wider">Módulo Educativo</span>
+            <h1 className="text-3xl font-extrabold text-stone-900 mt-1">A Floresta Amazônica</h1>
+            <p className="text-sm text-stone-600 mt-2">Importância ecológica, hídrica e social da maior bacia hidrográfica do mundo.</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm space-y-3">
+              <div className="text-3xl text-amazon-600"><i className="fa-solid fa-cloud-showers-heavy"></i></div>
+              <h3 className="font-bold text-stone-900">Rios Voadores e Ciclo da Água</h3>
+              <p className="text-xs text-stone-600 leading-relaxed">
+                As árvores da Amazônia lançam na atmosfera mais de 20 bilhões de toneladas de umidade todos os dias por evapotranspiração. Esse fluxo contínuo alimenta os chamados "Rios Voadores", correntes de ar umedecidas que garantem as chuvas essenciais para a agricultura do Sul e Sudeste do Brasil.
+              </p>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm space-y-3">
+              <div className="text-3xl text-amazon-600"><i className="fa-solid fa-leaf"></i></div>
+              <h3 className="font-bold text-stone-900">Estoque de Carbono Global</h3>
+              <p className="text-xs text-stone-600 leading-relaxed">
+                A vegetação amazônica armazena cerca de 150 a 200 bilhões de toneladas de carbono em suas árvores e solo. A preservação da floresta em pé evita a emissão maciça de $CO_2$ na atmosfera, sendo um pilar indispensável para conter o aquecimento global.
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-amazon-50 p-6 rounded-2xl border border-amazon-200 space-y-4">
+            <h3 className="font-bold text-amazon-900 text-base">Povos Tradicionais e Importância Social</h3>
+            <p className="text-xs text-amazon-950 leading-relaxed">
+              A floresta é habitada por mais de 400 povos indígenas, além de comunidades ribeirinhas e extrativistas. Suas práticas ancestrais de manejo sustentável são reconhecidas pela ciência como as formas mais eficazes de proteção contínua da cobertura vegetal original.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    function QueimadasEduSection() {
+      return (
+        <div className="max-w-5xl mx-auto px-4 py-12 space-y-8">
+          <div className="border-b border-stone-200 pb-6">
+            <span className="text-xs font-bold text-fire-600 uppercase tracking-wider">Módulo Educativo</span>
+            <h1 className="text-3xl font-extrabold text-stone-900 mt-1">Impactos das Queimadas</h1>
+            <p className="text-sm text-stone-600 mt-2">Causas antrópicas, destruição da biodiversidade e riscos à saúde humana.</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm space-y-3">
+              <div className="text-3xl text-fire-600"><i className="fa-solid fa-fire-flame-curved"></i></div>
+              <h3 className="font-bold text-stone-900">Origem Antrópica do Fogo</h3>
+              <p className="text-xs text-stone-600 leading-relaxed">
+                Diferente de biomas como o Cerrado, a Floresta Amazônica não possui dinâmica natural de incêndios por raios na época seca. O fogo é introduzido pelo ser humano para limpeza de pastagens e consolidação de áreas previamente desmatadas ilegalmente.
+              </p>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm space-y-3">
+              <div className="text-3xl text-fire-600"><i className="fa-solid fa-mask-ventilator"></i></div>
+              <h3 className="font-bold text-stone-900">Fumaça e Saúde Pública</h3>
+              <p className="text-xs text-stone-600 leading-relaxed">
+                A fumaça das queimadas libera micropartículas finas ($PM_{2.5}$) na atmosfera. Essas partículas penetram na corrente sanguínea e alvéolos pulmonares, provocando surtos graves de infecções respiratórias em crianças e idosos em toda a região Norte.
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function PreservacaoEduSection() {
+      return (
+        <div className="max-w-5xl mx-auto px-4 py-12 space-y-8">
+          <div className="border-b border-stone-200 pb-6">
+            <span className="text-xs font-bold text-amazon-600 uppercase tracking-wider">Módulo Educativo</span>
+            <h1 className="text-3xl font-extrabold text-stone-900 mt-1">Estratégias de Preservação</h1>
+            <p className="text-sm text-stone-600 mt-2">Monitoramento por satélites, legislação e unidades de conservação.</p>
+          </div>
+
+          <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm space-y-4">
+            <h3 className="font-bold text-stone-900 text-base">Monitoramento Orbital do INPE</h3>
+            <p className="text-xs text-stone-600 leading-relaxed">
+              O Brasil utiliza tecnologia orbital avançada desenvolvida pelo INPE. O sistema <strong>PRODES</strong> fornece a taxa anual oficial de desmatamento, enquanto o sistema <strong>DETER</strong> dispara alertas diários em tempo real para orientar as brigadas do IBAMA e ICMBio na apreensão de maquinários e embargo de áreas ilegais.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    function BiodiversidadeEduSection() {
+      return (
+        <div className="max-w-5xl mx-auto px-4 py-12 space-y-8">
+          <div className="border-b border-stone-200 pb-6">
+            <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Módulo Educativo</span>
+            <h1 className="text-3xl font-extrabold text-stone-900 mt-1">Biodiversidade Amazônica</h1>
+            <p className="text-sm text-stone-600 mt-2">Patrimônio biológico e potencial farmacológico incalculável.</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
+            <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm space-y-2">
+              <div className="text-2xl font-black text-amazon-700">40.000+</div>
+              <div className="text-xs font-bold text-stone-800">Espécies de Plantas</div>
+            </div>
+            <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm space-y-2">
+              <div className="text-2xl font-black text-amazon-700">1.300+</div>
+              <div className="text-xs font-bold text-stone-800">Espécies de Aves</div>
+            </div>
+            <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm space-y-2">
+              <div className="text-2xl font-black text-amazon-700">3.000+</div>
+              <div className="text-xs font-bold text-stone-800">Peixes de Água Doce</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function ComoAjudarEduSection() {
+      return (
+        <div className="max-w-5xl mx-auto px-4 py-12 space-y-8">
+          <div className="border-b border-stone-200 pb-6">
+            <span className="text-xs font-bold text-amazon-600 uppercase tracking-wider">Guia Prático</span>
+            <h1 className="text-3xl font-extrabold text-stone-900 mt-1">Como Você Pode Ajudar</h1>
+            <p className="text-sm text-stone-600 mt-2">Ações individuais e coletivas para conter o desmatamento e apoiar a floresta.</p>
+          </div>
+
+          <div className="space-y-4">
+            {[
+              { title: "Consumo Consciente e Certificação", desc: "Verifique a origem de carnes e produtos de madeira consumidos no dia a dia, priorizando selos de manejo florestal sustentável (FSC)." },
+              { title: "Denuncie Queimadas e Crimes Ambientais", desc: "Entre em contato diretamente com o Linha Verde do IBAMA (0800 061 8080) ao detectar focos ilícitos ou desmatamento." },
+              { title: "Combata a Desinformação", desc: "Compartilhe apenas dados validados cientificamente por órgãos de pesquisa como INPE, IPAM e universidades." },
+            ].map((item, idx) => (
+              <div key={idx} className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm flex items-start space-x-4">
+                <div className="w-8 h-8 bg-amazon-100 text-amazon-800 rounded-xl font-bold flex items-center justify-center shrink-0 text-sm">
+                  {idx + 1}
+                </div>
+                <div>
+                  <h4 className="font-bold text-stone-900 text-sm">{item.title}</h4>
+                  <p className="text-xs text-stone-600 mt-1 leading-relaxed">{item.desc}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function FontesEduSection() {
+      return (
+        <div className="max-w-5xl mx-auto px-4 py-12 space-y-8">
+          <div className="border-b border-stone-200 pb-6">
+            <span className="text-xs font-bold text-stone-500 uppercase tracking-wider">Transparência Científica</span>
+            <h1 className="text-3xl font-extrabold text-stone-900 mt-1">Fontes e Referências</h1>
+            <p className="text-sm text-stone-600 mt-2">Bases institucionais utilizadas para a elaboração do conteúdo e questionários do site.</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {[
+              { name: "INPE", full: "Instituto Nacional de Pesquisas Espaciais", url: "https://www.gov.br/inpe" },
+              { name: "IBAMA", full: "Instituto Brasileiro do Meio Ambiente e dos Recursos Naturais Renováveis", url: "https://www.gov.br/ibama" },
+              { name: "ICMBio", full: "Instituto Chico Mendes de Conservação da Biodiversidade", url: "https://www.gov.br/icmbio" },
+              { name: "IPAM", full: "Instituto de Pesquisa Ambiental da Amazônia", url: "https://ipam.org.br" },
+            ].map((src, i) => (
+              <a
+                key={i}
+                href={src.url}
+                target="_blank"
+                rel="noreferrer"
+                className="bg-white p-5 rounded-2xl border border-stone-200 hover:border-amazon-500 shadow-sm transition block"
+              >
+                <div className="font-bold text-amazon-700 text-sm">{src.name}</div>
+                <div className="text-xs text-stone-600 mt-1">{src.full}</div>
+              </a>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // --- ADMIN SECTION ---
+    function AdminSection({ questions, setQuestions }) {
+      const [newQ, setNewQ] = useState({
+        question: '',
+        opt0: '', opt1: '', opt2: '', opt3: '',
+        correctIndex: 0,
+        explanation: '',
+        category: 'Amazônia',
+        difficulty: 'Fácil'
+      });
+
+      const handleAdd = (e) => {
+        e.preventDefault();
+        if (!newQ.question || !newQ.opt0 || !newQ.opt1 || !newQ.opt2 || !newQ.opt3) return;
+        const qObj = {
+          id: Date.now(),
+          question: newQ.question,
+          options: [newQ.opt0, newQ.opt1, newQ.opt2, newQ.opt3],
+          correctIndex: Number(newQ.correctIndex),
+          explanation: newQ.explanation || 'Sem explicação adicional.',
+          category: newQ.category,
+          difficulty: newQ.difficulty
+        };
+        setQuestions([...questions, qObj]);
+        setNewQ({
+          question: '',
+          opt0: '', opt1: '', opt2: '', opt3: '',
+          correctIndex: 0,
+          explanation: '',
+          category: 'Amazônia',
+          difficulty: 'Fácil'
+        });
+        alert('Pergunta adicionada com sucesso ao banco!');
+      };
+
+      return (
+        <div className="max-w-5xl mx-auto px-4 py-12 space-y-8">
+          <div className="border-b border-stone-200 pb-6">
+            <h1 className="text-2xl font-bold text-stone-900">Painel Administrativo do Quiz</h1>
+            <p className="text-xs text-stone-600 mt-1">Gerencie o banco de questões ativo da plataforma.</p>
+          </div>
+
+          <form onSubmit={handleAdd} className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm space-y-4">
+            <h3 className="font-bold text-sm text-stone-900">Adicionar Nova Pergunta</h3>
+            <input
+              type="text"
+              placeholder="Digite o enunciado da pergunta..."
+              value={newQ.question}
+              onChange={e => setNewQ({...newQ, question: e.target.value})}
+              className="w-full p-3 border border-stone-300 rounded-xl text-xs focus:ring-2 focus:ring-amazon-500 outline-none"
+              required
+            />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <input type="text" placeholder="Opção A" value={newQ.opt0} onChange={e => setNewQ({...newQ, opt0: e.target.value})} className="p-3 border border-stone-300 rounded-xl text-xs" required />
+              <input type="text" placeholder="Opção B" value={newQ.opt1} onChange={e => setNewQ({...newQ, opt1: e.target.value})} className="p-3 border border-stone-300 rounded-xl text-xs" required />
+              <input type="text" placeholder="Opção C" value={newQ.opt2} onChange={e => setNewQ({...newQ, opt2: e.target.value})} className="p-3 border border-stone-300 rounded-xl text-xs" required />
+              <input type="text" placeholder="Opção D" value={newQ.opt3} onChange={e => setNewQ({...newQ, opt3: e.target.value})} className="p-3 border border-stone-300 rounded-xl text-xs" required />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <label className="text-[10px] font-bold text-stone-500 uppercase">Resposta Correta</label>
+                <select value={newQ.correctIndex} onChange={e => setNewQ({...newQ, correctIndex: e.target.value})} className="w-full p-2.5 border rounded-xl text-xs">
+                  <option value={0}>Opção A</option>
+                  <option value={1}>Opção B</option>
+                  <option value={2}>Opção C</option>
+                  <option value={3}>Opção D</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-stone-500 uppercase">Categoria</label>
+                <select value={newQ.category} onChange={e => setNewQ({...newQ, category: e.target.value})} className="w-full p-2.5 border rounded-xl text-xs">
+                  <option>Amazônia</option>
+                  <option>Queimadas</option>
+                  <option>Preservação</option>
+                  <option>Biodiversidade</option>
+                  <option>Clima</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-stone-500 uppercase">Dificuldade</label>
+                <select value={newQ.difficulty} onChange={e => setNewQ({...newQ, difficulty: e.target.value})} className="w-full p-2.5 border rounded-xl text-xs">
+                  <option>Fácil</option>
+                  <option>Médio</option>
+                  <option>Difícil</option>
+                </select>
+              </div>
+            </div>
+
+            <textarea
+              placeholder="Explicação científica..."
+              value={newQ.explanation}
+              onChange={e => setNewQ({...newQ, explanation: e.target.value})}
+              className="w-full p-3 border border-stone-300 rounded-xl text-xs"
+              rows={2}
+            ></textarea>
+
+            <button type="submit" className="w-full py-3 bg-amazon-700 hover:bg-amazon-600 text-white font-bold text-xs rounded-xl transition">
+              Salvar Pergunta no Banco
+            </button>
+          </form>
+
+          <div className="space-y-3">
+            <h3 className="font-bold text-sm text-stone-900">Perguntas Cadastradas ({questions.length})</h3>
+            <div className="space-y-2 max-h-80 overflow-y-auto pr-2">
+              {questions.map((q, idx) => (
+                <div key={q.id} className="p-4 bg-white border border-stone-200 rounded-2xl flex justify-between items-center text-xs">
+                  <div>
+                    <span className="font-bold text-amazon-700">#{idx + 1}</span> {q.question}
+                    <div className="text-[10px] text-stone-400 mt-0.5">{q.category} • {q.difficulty}</div>
+                  </div>
+                  <button
+                    onClick={() => setQuestions(questions.filter(x => x.id !== q.id))}
+                    className="text-red-500 hover:text-red-700 p-2"
+                  >
+                    <i className="fa-solid fa-trash"></i>
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // --- QUIZ HUB ENGINE ---
+    function QuizHub({ questions, initialMode, onBackHome }) {
+      const [mode, setMode] = useState(initialMode); // 'solo', 'multiplayer', or null
+
+      if (!mode) {
+        return (
+          <div className="max-w-4xl mx-auto px-4 py-16 space-y-8 text-center">
+            <div className="space-y-3">
+              <span className="text-xs font-bold text-fire-600 uppercase tracking-widest">Central de Desafios</span>
+              <h1 className="text-3xl font-black text-stone-900">Escolha o Modo do Quiz</h1>
+              <p className="text-xs text-stone-600 max-w-md mx-auto">
+                Teste seu aprendizado de forma individual com métricas completas ou dispute em tempo real contra amigos via código PIN.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-2xl mx-auto text-left">
+              <div
+                onClick={() => setMode('solo')}
+                className="bg-white p-8 rounded-3xl border-2 border-amazon-500 shadow-md hover:shadow-2xl transition cursor-pointer flex flex-col justify-between space-y-6 group"
+              >
+                <div className="space-y-3">
+                  <div className="w-14 h-14 rounded-2xl bg-amazon-100 text-amazon-700 flex items-center justify-center text-2xl font-bold group-hover:scale-110 transition">
+                    🎯
+                  </div>
+                  <h3 className="text-xl font-extrabold text-stone-900">Modo Solo</h3>
+                  <p className="text-xs text-stone-600 leading-relaxed">
+                    Responda às perguntas no seu próprio ritmo com cronômetro de 35s por questão e relatório individual de aproveitamento.
+                  </p>
+                </div>
+                <button className="w-full py-3 bg-amazon-700 text-white rounded-xl font-bold text-xs group-hover:bg-amazon-600 transition">
+                  Iniciar Jogada Solo
+                </button>
+              </div>
+
+              <div
+                onClick={() => setMode('multiplayer')}
+                className="bg-white p-8 rounded-3xl border-2 border-fire-500 shadow-md hover:shadow-2xl transition cursor-pointer flex flex-col justify-between space-y-6 group"
+              >
+                <div className="space-y-3">
+                  <div className="w-14 h-14 rounded-2xl bg-fire-100 text-fire-600 flex items-center justify-center text-2xl font-bold group-hover:scale-110 transition">
+                    👥
+                  </div>
+                  <h3 className="text-xl font-extrabold text-stone-900">Modo Multiplayer</h3>
+                  <p className="text-xs text-stone-600 leading-relaxed">
+                    Crie uma sala exclusiva ou entre com o PIN de 6 dígitos. Todos recebem as questões sincronizadas em tempo real.
+                  </p>
+                </div>
+                <button className="w-full py-3 bg-fire-600 text-white rounded-xl font-bold text-xs group-hover:bg-fire-500 transition">
+                  Entrar ou Criar Sala
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (mode === 'solo') {
+        return <SoloQuizEngine questions={questions} onBack={() => setMode(null)} />;
+      }
+
+      return <MultiplayerQuizEngine questions={questions} onBack={() => setMode(null)} />;
+    }
+
+    // --- SOLO QUIZ ENGINE ---
+    function SoloQuizEngine({ questions, onBack }) {
+      const [qCount, setQCount] = useState(7);
+      const [difficulty, setDifficulty] = useState('Aleatório');
+      const [started, setStarted] = useState(false);
+      const [activeQuestions, setActiveQuestions] = useState([]);
+      const [currentIndex, setCurrentIndex] = useState(0);
+
+      // Game run state
+      const [timer, setTimer] = useState(35);
+      const [selectedOption, setSelectedOption] = useState(null);
+      const [score, setScore] = useState(0);
+      const [answersHistory, setAnswersHistory] = useState([]);
+      const [finished, setFinished] = useState(false);
+
+      const timerRef = useRef(null);
+
+      // Prepare quiz set
+      const startQuiz = () => {
+        let filtered = [...questions];
+        if (difficulty !== 'Aleatório') {
+          filtered = filtered.filter(q => q.difficulty === difficulty);
+        }
+        if (filtered.length < 3) filtered = [...questions]; // fallback
+
+        // Shuffle
+        filtered = filtered.sort(() => Math.random() - 0.5).slice(0, Math.min(qCount, filtered.length));
+        
+        // Shuffle alternatives
+        const prepared = filtered.map(q => {
+          const optsWithIdx = q.options.map((opt, i) => ({ opt, originalIdx: i }));
+          const shuffledOpts = optsWithIdx.sort(() => Math.random() - 0.5);
+          const newCorrectIdx = shuffledOpts.findIndex(item => item.originalIdx === q.correctIndex);
+          return {
+            ...q,
+            options: shuffledOpts.map(item => item.opt),
+            correctIndex: newCorrectIdx
+          };
+        });
+
+        setActiveQuestions(prepared);
+        setCurrentIndex(0);
+        setScore(0);
+        setAnswersHistory([]);
+        setFinished(false);
+        setStarted(true);
+        setTimer(35);
+        setSelectedOption(null);
+      };
+
+      // Timer effect
+      useEffect(() => {
+        if (started && !finished && selectedOption === null) {
+          timerRef.current = setInterval(() => {
+            setTimer(prev => {
+              if (prev <= 1) {
+                clearInterval(timerRef.current);
+                handleSelectOption(-1); // timeout
+                return 0;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+        }
+        return () => clearInterval(timerRef.current);
+      }, [started, finished, currentIndex, selectedOption]);
+
+      const handleSelectOption = (index) => {
+        if (selectedOption !== null) return;
+        clearInterval(timerRef.current);
+        setSelectedOption(index);
+
+        const q = activeQuestions[currentIndex];
+        const isCorrect = index === q.correctIndex;
+        let pointsEarned = 0;
+
+        if (isCorrect) {
+          // Speed bonus: 500 base + up to 500 based on remaining time
+          pointsEarned = 500 + Math.round((timer / 35) * 500);
+          setScore(prev => prev + pointsEarned);
+        }
+
+        setAnswersHistory(prev => [...prev, {
+          question: q.question,
+          isCorrect,
+          pointsEarned,
+          timeSpent: 35 - timer
+        }]);
+      };
+
+      const handleNextQuestion = () => {
+        if (currentIndex + 1 < activeQuestions.length) {
+          setCurrentIndex(prev => prev + 1);
+          setSelectedOption(null);
+          setTimer(35);
+        } else {
+          setFinished(true);
+        }
+      };
+
+      if (!started) {
+        return (
+          <div className="max-w-xl mx-auto px-4 py-12 space-y-6">
+            <button onClick={onBack} className="text-xs font-bold text-stone-500 hover:text-stone-800 flex items-center space-x-1">
+              <i className="fa-solid fa-arrow-left"></i>
+              <span>Voltar</span>
+            </button>
+
+            <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-md space-y-6">
+              <div className="border-b border-stone-100 pb-4">
+                <h2 className="text-2xl font-bold text-stone-900">Configurar Partida Solo</h2>
+                <p className="text-xs text-stone-600 mt-1">Ajuste os parâmetros antes de iniciar.</p>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs font-bold text-stone-700 block mb-2">Quantidade de Perguntas</label>
+                  <div className="grid grid-cols-6 gap-2">
+                    {[7, 8, 9, 10, 11, 12].map(n => (
+                      <button
+                        key={n}
+                        onClick={() => setQCount(n)}
+                        className={`py-2 rounded-xl text-xs font-bold border ${
+                          qCount === n
+                            ? 'bg-amazon-700 text-white border-amazon-700'
+                            : 'bg-stone-50 text-stone-700 border-stone-200 hover:bg-stone-100'
+                        }`}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-stone-700 block mb-2">Dificuldade</label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {['Aleatório', 'Fácil', 'Médio', 'Difícil'].map(d => (
+                      <button
+                        key={d}
+                        onClick={() => setDifficulty(d)}
+                        className={`py-2 rounded-xl text-xs font-bold border ${
+                          difficulty === d
+                            ? 'bg-amazon-700 text-white border-amazon-700'
+                            : 'bg-stone-50 text-stone-700 border-stone-200 hover:bg-stone-100'
+                        }`}
+                      >
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={startQuiz}
+                className="w-full py-4 bg-amazon-600 hover:bg-amazon-500 text-white font-extrabold text-sm rounded-2xl shadow-lg transition"
+              >
+                Começar Desafio Solo
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (finished) {
+        const total = activeQuestions.length;
+        const correctCount = answersHistory.filter(a => a.isCorrect).length;
+        const pct = Math.round((correctCount / total) * 100);
+        const avgTime = (answersHistory.reduce((acc, a) => acc + a.timeSpent, 0) / total).toFixed(1);
+
+        let feedbackMsg = "";
+        if (pct >= 90) feedbackMsg = "Excelente! Você demonstrou um ótimo conhecimento sobre a Amazônia.";
+        else if (pct >= 70) feedbackMsg = "Muito bom! Você conhece bastante sobre a preservação e biodiversidade.";
+        else if (pct >= 50) feedbackMsg = "Bom começo! Continue aprendendo sobre a preservação da Amazônia.";
+        else feedbackMsg = "Que tal conhecer mais sobre o conteúdo educativo e tentar novamente?";
+
+        return (
+          <div className="max-w-2xl mx-auto px-4 py-12 space-y-6 text-center">
+            <div className="bg-white p-8 sm:p-12 rounded-3xl border border-stone-200 shadow-xl space-y-6">
+              <div className="w-16 h-16 bg-amazon-100 text-amazon-700 rounded-2xl flex items-center justify-center text-3xl mx-auto">
+                🏆
+              </div>
+
+              <div className="space-y-2">
+                <h2 className="text-2xl font-black text-stone-900">Resultado do Quiz</h2>
+                <p className="text-xs text-stone-600">{feedbackMsg}</p>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-4 border-t border-stone-100">
+                <div className="p-3 bg-stone-50 rounded-2xl border border-stone-100">
+                  <div className="text-[10px] text-stone-400 uppercase font-bold">Pontuação</div>
+                  <div className="text-lg font-black text-amazon-700">{score.toLocaleString()}</div>
+                </div>
+                <div className="p-3 bg-stone-50 rounded-2xl border border-stone-100">
+                  <div className="text-[10px] text-stone-400 uppercase font-bold">Acertos</div>
+                  <div className="text-lg font-black text-stone-900">{correctCount}/{total}</div>
+                </div>
+                <div className="p-3 bg-stone-50 rounded-2xl border border-stone-100">
+                  <div className="text-[10px] text-stone-400 uppercase font-bold">Aproveitamento</div>
+                  <div className="text-lg font-black text-stone-900">{pct}%</div>
+                </div>
+                <div className="p-3 bg-stone-50 rounded-2xl border border-stone-100">
+                  <div className="text-[10px] text-stone-400 uppercase font-bold">Tempo Médio</div>
+                  <div className="text-lg font-black text-stone-900">{avgTime}s</div>
+                </div>
+              </div>
+
+              <div className="pt-4 flex gap-3">
+                <button onClick={startQuiz} className="flex-1 py-3.5 bg-amazon-700 hover:bg-amazon-600 text-white font-bold text-xs rounded-xl transition">
+                  Jogar Novamente
+                </button>
+                <button onClick={onBack} className="flex-1 py-3.5 bg-stone-100 hover:bg-stone-200 text-stone-700 font-bold text-xs rounded-xl transition">
+                  Sair do Quiz
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      const currentQ = activeQuestions[currentIndex];
+
+      return (
+        <div className="max-w-3xl mx-auto px-4 py-8 space-y-6">
+          {/* HEADER STATUS */}
+          <div className="flex items-center justify-between bg-white p-4 rounded-2xl border border-stone-200 shadow-sm">
+            <span className="text-xs font-bold text-stone-500">
+              Pergunta <strong className="text-stone-900">{currentIndex + 1}</strong> de {activeQuestions.length}
+            </span>
+            <div className="flex items-center space-x-2">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm ${
+                timer <= 5 ? 'bg-red-500 text-white animate-bounce' : 'bg-stone-100 text-stone-800'
+              }`}>
+                {timer}s
+              </div>
+            </div>
+            <div className="text-xs font-bold text-amazon-700">
+              {score} pts
+            </div>
+          </div>
+
+          {/* QUESTION CARD */}
+          <div className="bg-white p-6 sm:p-8 rounded-3xl border border-stone-200 shadow-md space-y-6">
+            <div className="inline-block px-3 py-1 rounded-full bg-stone-100 text-[10px] font-bold text-stone-600 uppercase">
+              {currentQ.category} • {currentQ.difficulty}
+            </div>
+            <h2 className="text-lg sm:text-xl font-extrabold text-stone-900 leading-snug">
+              {currentQ.question}
+            </h2>
+
+            {/* OPTIONS */}
+            <div className="grid grid-cols-1 gap-3">
+              {currentQ.options.map((opt, idx) => {
+                let btnStyle = "bg-stone-50 text-stone-800 border-stone-200 hover:bg-stone-100";
+                if (selectedOption !== null) {
+                  if (idx === currentQ.correctIndex) {
+                    btnStyle = "bg-emerald-600 text-white border-emerald-600 font-bold";
+                  } else if (idx === selectedOption) {
+                    btnStyle = "bg-red-600 text-white border-red-600";
+                  } else {
+                    btnStyle = "bg-stone-50 text-stone-400 border-stone-200 opacity-50";
+                  }
+                }
+
+                return (
+                  <button
+                    key={idx}
+                    disabled={selectedOption !== null}
+                    onClick={() => handleSelectOption(idx)}
+                    className={`w-full p-4 rounded-2xl text-left text-xs sm:text-sm font-medium border-2 transition flex items-start space-x-3 ${btnStyle}`}
+                  >
+                    <span className="w-6 h-6 rounded-lg bg-black/10 flex items-center justify-center text-[10px] font-bold shrink-0">
+                      {String.fromCharCode(65 + idx)}
+                    </span>
+                    <span className="leading-relaxed">{opt}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* EXPLANATION & NEXT BUTTON */}
+            {selectedOption !== null && (
+              <div className="pt-4 border-t border-stone-100 space-y-4 animate-fade-in">
+                <div className="p-4 rounded-2xl bg-amazon-50 border border-amazon-200 text-xs text-amazon-950 space-y-1">
+                  <div className="font-bold flex items-center space-x-1 text-amazon-800">
+                    <i className="fa-solid fa-circle-info"></i>
+                    <span>Explicação Científica:</span>
+                  </div>
+                  <p className="leading-relaxed">{currentQ.explanation}</p>
+                </div>
+
+                <button
+                  onClick={handleNextQuestion}
+                  className="w-full py-3.5 bg-amazon-700 hover:bg-amazon-600 text-white font-bold text-xs rounded-xl shadow transition"
+                >
+                  {currentIndex + 1 === activeQuestions.length ? 'Ver Resultado Final' : 'Próxima Pergunta →'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // --- MULTIPLAYER QUIZ ENGINE (OTIMIZADO & REFORÇADO) ---
+    function MultiplayerQuizEngine({ questions, onBack }) {
+      const [viewState, setViewState] = useState('menu'); // 'menu', 'create', 'join', 'room'
+      const [playerName, setPlayerName] = useState('');
+      const [roomPin, setRoomPin] = useState('');
+      const [currentRoom, setCurrentRoom] = useState(null);
+      const [qCount, setQCount] = useState(7);
+      const [timer, setTimer] = useState(35);
+      const [copiedPin, setCopiedPin] = useState(false);
+
+      // Ouvinte em tempo real da sala
+      useEffect(() => {
+        if (roomPin && window.AmazoniaDB) {
+          const unsub = window.AmazoniaDB.listenRoom(roomPin, (data) => {
+            if (data) setCurrentRoom(data);
+          });
+          return () => unsub();
+        }
+      }, [roomPin]);
+
+      // Cronômetro sincronizado
+      useEffect(() => {
+        if (currentRoom && currentRoom.status === 'question' && currentRoom.questionStartTime) {
+          const interval = setInterval(() => {
+            const elapsed = Math.floor((Date.now() - currentRoom.questionStartTime) / 1000);
+            const remaining = Math.max(0, 35 - elapsed);
+            setTimer(remaining);
+          }, 400);
+          return () => clearInterval(interval);
+        }
+      }, [currentRoom?.status, currentRoom?.questionStartTime, currentRoom?.currentQIndex]);
+
+      // Confetti e celebração no pódio
+      useEffect(() => {
+        if (currentRoom && currentRoom.status === 'finished' && typeof confetti === 'function') {
+          confetti({ particleCount: 150, spread: 90, origin: { y: 0.6 } });
+        }
+      }, [currentRoom?.status]);
+
+      // Copiar PIN da Sala
+      const handleCopyPin = () => {
+        if (!currentRoom) return;
+        navigator.clipboard.writeText(currentRoom.pin);
+        setCopiedPin(true);
+        setTimeout(() => setCopiedPin(false), 2000);
+      };
+
+      // Criar Nova Sala
+      const handleCreateRoom = async () => {
+        const cleanName = playerName.trim();
+        if (!cleanName) return alert('Por favor, digite seu nome ou apelido!');
+        const pin = Math.floor(100000 + Math.random() * 900000).toString();
+
+        const selectedQ = [...questions].sort(() => Math.random() - 0.5).slice(0, qCount);
+
+        const newRoomData = {
+          pin,
+          hostName: cleanName,
+          status: 'lobby',
+          questions: selectedQ,
+          currentQIndex: 0,
+          questionStartTime: 0,
+          players: {
+            [cleanName]: {
+              score: 0,
+              streak: 0,
+              hasAnswered: false,
+              selectedIdx: null,
+              isCorrect: null,
+              lastPoints: 0
+            }
+          }
+        };
+
+        await window.AmazoniaDB.createRoom(pin, newRoomData);
+        setRoomPin(pin);
+        setPlayerName(cleanName);
+        setViewState('room');
+      };
+
+      // Entrar em Sala Existente
+      const handleJoinRoom = async () => {
+        const cleanName = playerName.trim();
+        const cleanPin = roomPin.replace(/\D/g, '').slice(0, 6);
+        if (!cleanName) return alert('Por favor, digite seu apelido!');
+        if (cleanPin.length !== 6) return alert('O código PIN deve possuir exatamente 6 dígitos.');
+
+        const roomData = await window.AmazoniaDB.getRoom(cleanPin);
+
+        if (!roomData) {
+          return alert('Sala não encontrada! Verifique se o código PIN está correto.');
+        }
+
+        const updatedPlayers = {
+          ...roomData.players,
+          [cleanName]: {
+            score: 0,
+            streak: 0,
+            hasAnswered: false,
+            selectedIdx: null,
+            isCorrect: null,
+            lastPoints: 0
+          }
+        };
+
+        try {
+          await window.AmazoniaDB.updateRoom(cleanPin, { players: updatedPlayers });
+          setRoomPin(cleanPin);
+          setPlayerName(cleanName);
+          setViewState('room');
+        } catch (e) {
+          console.error(e);
+          alert(e?.message || 'Não foi possível entrar na sala.');
+        }
+      };
+
+      // Anfitrião remove jogador inativo/indesejado
+      const handleKickPlayer = async (targetPlayer) => {
+        if (!currentRoom || currentRoom.hostName !== playerName) return;
+        if (targetPlayer === playerName) return alert('Você é o anfitrião e não pode se remover!');
+
+        const updatedPlayers = { ...currentRoom.players };
+        delete updatedPlayers[targetPlayer];
+
+        await window.AmazoniaDB.updateRoom(roomPin, { players: updatedPlayers });
+      };
+
+      // Anfitrião Inicia/Reinicia a Partida
+      const handleStartGame = async () => {
+        if (!currentRoom) return;
+
+        const resetPlayers = {};
+        Object.keys(currentRoom.players || {}).forEach(p => {
+          resetPlayers[p] = {
+            score: 0,
+            streak: 0,
+            hasAnswered: false,
+            selectedIdx: null,
+            isCorrect: null,
+            lastPoints: 0
+          };
+        });
+
+        // Se estiver reiniciando no fim da partida, sorteia novas perguntas
+        const newQuestions = currentRoom.status === 'finished' 
+          ? [...questions].sort(() => Math.random() - 0.5).slice(0, currentRoom.questions.length || qCount)
+          : currentRoom.questions;
+
+        await window.AmazoniaDB.updateRoom(roomPin, {
+          status: 'question',
+          questions: newQuestions,
+          currentQIndex: 0,
+          questionStartTime: Date.now(),
+          players: resetPlayers
+        });
+      };
+
+      if (viewState === 'menu') {
+        return (
+          <div className="max-w-md mx-auto px-4 py-12 space-y-6 text-center">
+            <button onClick={onBack} className="text-xs font-bold text-stone-500 hover:text-stone-800 flex items-center space-x-1">
+              <i className="fa-solid fa-arrow-left"></i>
+              <span>Voltar</span>
+            </button>
+
+            <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-md space-y-6">
+              <div className="w-12 h-12 bg-fire-100 text-fire-600 rounded-2xl flex items-center justify-center text-2xl mx-auto font-bold">
+                👥
+              </div>
+              <div>
+                <h2 className="text-2xl font-black text-stone-900">Quiz Multiplayer</h2>
+                <p className="text-xs text-stone-500 mt-1">Dispute simultaneamente em tempo real com amigos.</p>
+              </div>
+
+              <div className="space-y-3">
+                <button
+                  onClick={() => setViewState('create')}
+                  className="w-full py-4 bg-fire-600 hover:bg-fire-500 text-white font-bold text-xs rounded-2xl shadow transition flex items-center justify-center space-x-2"
+                >
+                  <i className="fa-solid fa-plus"></i>
+                  <span>Criar Nova Sala</span>
+                </button>
+                <button
+                  onClick={() => setViewState('join')}
+                  className="w-full py-4 bg-amazon-700 hover:bg-amazon-600 text-white font-bold text-xs rounded-2xl shadow transition flex items-center justify-center space-x-2"
+                >
+                  <i className="fa-solid fa-right-to-bracket"></i>
+                  <span>Entrar com Código PIN</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (viewState === 'create') {
+        return (
+          <div className="max-w-md mx-auto px-4 py-12 space-y-6">
+            <button onClick={() => setViewState('menu')} className="text-xs font-bold text-stone-500 hover:text-stone-800 flex items-center space-x-1">
+              <i className="fa-solid fa-arrow-left"></i>
+              <span>Voltar ao Menu</span>
+            </button>
+            <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-md space-y-4">
+              <h3 className="font-bold text-lg text-stone-900">Criar Sala de Desafio</h3>
+              <div>
+                <label className="text-xs font-bold text-stone-600 block mb-1">Seu Nome / Apelido</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Maria"
+                  value={playerName}
+                  onChange={e => setPlayerName(e.target.value)}
+                  className="w-full p-3 border rounded-xl text-xs focus:ring-2 focus:ring-fire-500 outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-stone-600 block mb-1">Quantidade de Perguntas</label>
+                <select value={qCount} onChange={e => setQCount(Number(e.target.value))} className="w-full p-3 border rounded-xl text-xs focus:ring-2 focus:ring-fire-500 outline-none">
+                  <option value={7}>7 Perguntas</option>
+                  <option value={10}>10 Perguntas</option>
+                  <option value={12}>12 Perguntas</option>
+                </select>
+              </div>
+              <button onClick={handleCreateRoom} className="w-full py-3.5 bg-fire-600 hover:bg-fire-500 text-white font-bold text-xs rounded-xl shadow transition">
+                Gerar Sala e Código PIN
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (viewState === 'join') {
+        return (
+          <div className="max-w-md mx-auto px-4 py-12 space-y-6">
+            <button onClick={() => setViewState('menu')} className="text-xs font-bold text-stone-500 hover:text-stone-800 flex items-center space-x-1">
+              <i className="fa-solid fa-arrow-left"></i>
+              <span>Voltar ao Menu</span>
+            </button>
+            <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-md space-y-4">
+              <h3 className="font-bold text-lg text-stone-900">Entrar em Partida</h3>
+              <div>
+                <label className="text-xs font-bold text-stone-600 block mb-1">Código PIN da Sala (6 dígitos)</label>
+                <input
+                  type="text"
+                  placeholder="Ex: 482917"
+                  value={roomPin}
+                  inputMode="numeric"
+                  maxLength={6}
+                  onChange={e => setRoomPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  className="w-full p-3 border rounded-xl text-xs font-mono font-bold text-center tracking-widest text-lg focus:ring-2 focus:ring-amazon-500 outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-stone-600 block mb-1">Seu Apelido</label>
+                <input
+                  type="text"
+                  placeholder="Ex: João"
+                  value={playerName}
+                  onChange={e => setPlayerName(e.target.value)}
+                  className="w-full p-3 border rounded-xl text-xs focus:ring-2 focus:ring-amazon-500 outline-none"
+                />
+              </div>
+              <button onClick={handleJoinRoom} className="w-full py-3.5 bg-amazon-700 hover:bg-amazon-600 text-white font-bold text-xs rounded-xl shadow transition">
+                Entrar na Sala
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (viewState === 'room' && currentRoom) {
+        const isHost = currentRoom.hostName === playerName;
+        const playerList = Object.keys(currentRoom.players || {});
+
+        // LOBBY STATE
+        if (currentRoom.status === 'lobby') {
+          return (
+            <div className="max-w-lg mx-auto px-4 py-12 space-y-6 text-center">
+              <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-xl space-y-6">
+                <span className="text-[10px] font-bold text-stone-400 uppercase tracking-widest block">Código PIN da Sala</span>
+                
+                <div className="flex items-center justify-center space-x-3">
+                  <div className="text-4xl font-black text-fire-600 font-mono tracking-widest bg-stone-50 px-6 py-3 rounded-2xl border border-stone-200 shadow-inner">
+                    {currentRoom.pin}
+                  </div>
+                  <button
+                    onClick={handleCopyPin}
+                    className="p-3 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-2xl transition border border-stone-200"
+                    title="Copiar Código"
+                  >
+                    <i className={`fa-solid ${copiedPin ? 'fa-check text-emerald-600' : 'fa-copy'}`}></i>
+                  </button>
+                </div>
+                {copiedPin && <p className="text-[11px] text-emerald-600 font-bold animate-fade-in">✓ Código PIN copiado!</p>}
+
+                <div className="border-t border-stone-100 pt-5 text-left space-y-3">
+                  <div className="flex justify-between items-center text-xs font-bold text-stone-600">
+                    <span>Jogadores Conectados ({playerList.length})</span>
+                    <span className="text-[10px] text-stone-400 font-normal">Sua tela atualiza automaticamente</span>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {playerList.map(p => (
+                      <span key={p} className="px-3.5 py-2 bg-stone-50 text-stone-800 rounded-xl text-xs font-bold border border-stone-200 flex items-center space-x-2">
+                        <span>👤</span>
+                        <span>{p}</span>
+                        {p === currentRoom.hostName && <span className="text-[9px] bg-fire-100 text-fire-700 px-1.5 py-0.5 rounded font-bold">HOST</span>}
+                        {isHost && p !== playerName && (
+                          <button
+                            onClick={() => handleKickPlayer(p)}
+                            className="text-stone-400 hover:text-red-500 ml-1 text-xs"
+                            title="Remover jogador"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {isHost ? (
+                  <button onClick={handleStartGame} className="w-full py-4 bg-fire-600 hover:bg-fire-500 text-white font-extrabold text-xs rounded-2xl shadow transition">
+                    Iniciar Partida Multiplayer ({playerList.length} conectados)
+                  </button>
+                ) : (
+                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-800 flex items-center justify-center space-x-2 animate-pulse">
+                    <i className="fa-solid fa-spinner fa-spin"></i>
+                    <span>Aguardando o anfitrião <strong>{currentRoom.hostName}</strong> iniciar...</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        }
+
+        // QUESTION STATE IN MULTIPLAYER
+        if (currentRoom.status === 'question') {
+          const currentQ = currentRoom.questions[currentRoom.currentQIndex];
+          const playerInfo = currentRoom.players?.[playerName] || {};
+          const playersArray = Object.entries(currentRoom.players || {});
+          const answeredCount = playersArray.filter(([_, p]) => p.hasAnswered).length;
+          const totalPlayers = playersArray.length;
+          const timeIsUp = timer === 0;
+          const allAnswered = answeredCount === totalPlayers && totalPlayers > 0;
+          const showResults = timeIsUp || allAnswered;
+
+          const handleAnswerMP = async (idx) => {
+            if (!currentRoom || !playerName || playerInfo.hasAnswered || timeIsUp) return;
+
+            const isCorrect = idx === currentQ.correctIndex;
+            const currentStreak = isCorrect ? (playerInfo.streak || 0) + 1 : 0;
+            const streakBonus = isCorrect ? (currentStreak - 1) * 100 : 0;
+            const speedBonus = isCorrect ? Math.round((timer / 35) * 500) : 0;
+            const pointsEarned = isCorrect ? 500 + speedBonus + streakBonus : 0;
+            const newScore = (playerInfo.score || 0) + pointsEarned;
+
+            const updatePayload = {
+              [`players.${playerName}.hasAnswered`]: true,
+              [`players.${playerName}.selectedIdx`]: idx,
+              [`players.${playerName}.isCorrect`]: isCorrect,
+              [`players.${playerName}.lastPoints`]: pointsEarned,
+              [`players.${playerName}.streak`]: currentStreak,
+              [`players.${playerName}.score`]: newScore
+            };
+
+            await window.AmazoniaDB.updateRoom(roomPin, updatePayload);
+          };
+
+          const handleNextMP = async () => {
+            if (!isHost) return;
+            const nextIdx = currentRoom.currentQIndex + 1;
+
+            if (nextIdx < currentRoom.questions.length) {
+              const resetPlayers = {};
+              Object.keys(currentRoom.players || {}).forEach(p => {
+                resetPlayers[p] = {
+                  ...currentRoom.players[p],
+                  hasAnswered: false,
+                  selectedIdx: null,
+                  isCorrect: null,
+                  lastPoints: 0
+                };
+              });
+
+              await window.AmazoniaDB.updateRoom(roomPin, {
+                status: 'question',
+                currentQIndex: nextIdx,
+                questionStartTime: Date.now(),
+                players: resetPlayers
+              });
+            } else {
+              await window.AmazoniaDB.updateRoom(roomPin, { status: 'finished' });
+            }
+          };
+
+          // Barra de progresso do cronômetro
+          const timerPercentage = Math.round((timer / 35) * 100);
+
+          return (
+            <div className="max-w-2xl mx-auto px-4 py-8 space-y-6">
+              {/* TOP STATUS BAR */}
+              <div className="bg-white p-4 rounded-2xl border border-stone-200 shadow-sm space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-bold text-stone-500 block">
+                      Pergunta <strong className="text-stone-900">{currentRoom.currentQIndex + 1}</strong> de {currentRoom.questions.length}
+                    </span>
+                    <span className="text-[10px] text-stone-400 font-semibold">
+                      Respostas: <strong className="text-amazon-700">{answeredCount}/{totalPlayers}</strong> jogadores
+                    </span>
+                  </div>
+
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm ${
+                    timer <= 5 ? 'bg-red-500 text-white animate-bounce' : 'bg-stone-100 text-stone-800'
+                  }`}>
+                    {timer}s
+                  </div>
+
+                  <div className="text-right">
+                    <span className="text-[10px] text-stone-400 uppercase font-bold block">Pontuação</span>
+                    <span className="text-xs font-black text-amazon-700">{playerInfo.score || 0} pts</span>
+                  </div>
+                </div>
+
+                {/* VISUAL TIMER BAR */}
+                <div className="w-full bg-stone-100 h-1.5 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-500 ${
+                      timerPercentage > 50 ? 'bg-emerald-500' : timerPercentage > 20 ? 'bg-amber-500' : 'bg-red-500'
+                    }`}
+                    style={{ width: `${timerPercentage}%` }}
+                  ></div>
+                </div>
+              </div>
+
+              {/* QUESTION CARD */}
+              <div className="bg-white p-6 sm:p-8 rounded-3xl border border-stone-200 shadow-md space-y-6">
+                <div className="flex justify-between items-center">
+                  <div className="inline-block px-3 py-1 rounded-full bg-stone-100 text-[10px] font-bold text-stone-600 uppercase">
+                    {currentQ.category} • {currentQ.difficulty}
+                  </div>
+                  {playerInfo.streak > 1 && (
+                    <div className="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-full text-[10px] font-bold flex items-center space-x-1">
+                      <span>🔥</span>
+                      <span>Sequência {playerInfo.streak}x</span>
+                    </div>
+                  )}
+                </div>
+
+                <h2 className="text-lg sm:text-xl font-extrabold text-stone-900 leading-snug">
+                  {currentQ.question}
+                </h2>
+
+                {/* OPTIONS */}
+                <div className="grid grid-cols-1 gap-3">
+                  {currentQ.options.map((opt, i) => {
+                    let btnStyle = "bg-stone-50 text-stone-800 hover:bg-stone-100 border-stone-200";
+
+                    if (showResults) {
+                      if (i === currentQ.correctIndex) {
+                        btnStyle = "bg-emerald-600 text-white border-emerald-600 font-bold shadow-md";
+                      } else if (playerInfo.selectedIdx === i) {
+                        btnStyle = "bg-red-600 text-white border-red-600 font-bold";
+                      } else {
+                        btnStyle = "bg-stone-50 text-stone-400 border-stone-200 opacity-40";
+                      }
+                    }
+
+                    return (
+                      <button
+                        key={i}
+                        disabled={showResults}
+                        onClick={() => handleAnswerMP(i)}
+                        className={`w-full p-4 rounded-2xl text-left text-xs sm:text-sm font-medium border-2 transition flex items-center justify-between ${btnStyle}`}
+                      >
+                        <div className="flex items-start space-x-3">
+                          <span className="w-6 h-6 rounded-lg bg-black/10 flex items-center justify-center text-[10px] font-bold shrink-0">
+                            {String.fromCharCode(65 + i)}
+                          </span>
+                          <span className="leading-relaxed">{opt}</span>
+                        </div>
+                        {showResults && i === currentQ.correctIndex && (
+                          <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded-full shrink-0 ml-2">✓ Correta</span>
+                        )}
+                        {showResults && playerInfo.selectedIdx === i && i !== currentQ.correctIndex && (
+                          <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded-full shrink-0 ml-2">✕ Sua Escolha</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* EXPLANATION & FEEDBACK */}
+                {showResults && (
+                  <div className="pt-4 border-t border-stone-100 space-y-4 animate-fade-in">
+                    <div className="p-4 rounded-2xl bg-amazon-50 border border-amazon-200 text-xs text-amazon-950 space-y-1">
+                      <div className="font-bold flex items-center space-x-1 text-amazon-800">
+                        <i className="fa-solid fa-circle-info"></i>
+                        <span>Explicação Científica:</span>
+                      </div>
+                      <p className="leading-relaxed">{currentQ.explanation}</p>
+                    </div>
+
+                    {playerInfo.hasAnswered && playerInfo.isCorrect && (
+                      <div className="p-3 bg-emerald-100 text-emerald-900 border border-emerald-300 rounded-xl text-xs font-bold text-center">
+                        🎉 Resposta correta! +{playerInfo.lastPoints} pontos acumulados!
+                      </div>
+                    )}
+                    {playerInfo.hasAnswered && !playerInfo.isCorrect && (
+                      <div className="p-3 bg-red-100 text-red-900 border border-red-300 rounded-xl text-xs font-bold text-center">
+                        ❌ Resposta incorreta nesta rodada.
+                      </div>
+                    )}
+                    {!playerInfo.hasAnswered && (
+                      <div className="p-3 bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold text-center">
+                        {allAnswered ? '⚡ Rodada finalizada antecipadamente pois todos já responderam!' : '⏰ Tempo esgotado para esta questão!'}
+                      </div>
+                    )}
+
+                    {isHost ? (
+                      <button
+                        onClick={handleNextMP}
+                        className="w-full py-3.5 bg-fire-600 hover:bg-fire-500 text-white font-extrabold text-xs rounded-xl shadow transition"
+                      >
+                        {currentRoom.currentQIndex + 1 === currentRoom.questions.length ? 'Finalizar Partida e Ver Pódio →' : 'Avançar para Próxima Questão →'}
+                      </button>
+                    ) : (
+                      <p className="text-xs text-center font-semibold text-stone-500 italic animate-pulse">
+                        Aguardando o anfitrião {currentRoom.hostName} avançar...
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* LIVE PLAYER STATUS / LEADERBOARD */}
+              <div className="bg-white p-4 rounded-2xl border border-stone-200 shadow-sm space-y-3">
+                <div className="text-xs font-bold text-stone-700 flex justify-between items-center">
+                  <span>Placar em Tempo Real</span>
+                  <span className="text-[10px] text-stone-400">{answeredCount}/{totalPlayers} Responderam</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {playersArray
+                    .sort((a, b) => (b[1].score || 0) - (a[1].score || 0))
+                    .map(([pName, pData], rankIdx) => (
+                      <div
+                        key={pName}
+                        className={`p-2.5 rounded-xl border text-xs flex justify-between items-center ${
+                          pName === playerName ? 'bg-amazon-50 border-amazon-300 font-bold' : 'bg-stone-50 border-stone-200'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-2">
+                          <span className="font-mono text-[10px] text-stone-400">#{rankIdx + 1}</span>
+                          <span className={pData.hasAnswered ? 'text-emerald-600' : 'text-stone-300'}>
+                            {pData.hasAnswered ? '✓' : '⏳'}
+                          </span>
+                          <span className="truncate max-w-[120px]">{pName}</span>
+                        </div>
+                        <span className="font-mono text-stone-800 font-bold">{pData.score || 0} pts</span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        // PODIUM / FINISHED STATE
+        if (currentRoom.status === 'finished') {
+          const sorted = Object.entries(currentRoom.players || {})
+            .map(([name, data]) => ({ name, ...data }))
+            .sort((a, b) => b.score - a.score);
+
+          return (
+            <div className="max-w-lg mx-auto px-4 py-12 space-y-6 text-center">
+              <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-2xl space-y-6">
+                <div className="text-5xl">🏆</div>
+                <div>
+                  <h2 className="text-2xl font-black text-stone-900">Pódio Final da Partida</h2>
+                  <p className="text-xs text-stone-500 mt-1">Parabéns aos participantes pelo aprendizado!</p>
+                </div>
+
+                <div className="space-y-3 pt-4 border-t border-stone-100">
+                  {sorted.map((p, idx) => (
+                    <div
+                      key={p.name}
+                      className={`p-4 rounded-2xl flex items-center justify-between text-xs font-bold ${
+                        idx === 0
+                          ? 'bg-amber-100 text-amber-900 border border-amber-300 shadow-sm'
+                          : idx === 1
+                          ? 'bg-slate-100 text-slate-800 border border-slate-300'
+                          : idx === 2
+                          ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                          : 'bg-stone-50 text-stone-800 border border-stone-200'
+                      }`}
+                    >
+                      <div className="flex items-center space-x-3">
+                        <span className="text-base">{idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`}</span>
+                        <span>{p.name}</span>
+                      </div>
+                      <span className="font-mono">{p.score} pts</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="pt-2 flex flex-col sm:flex-row gap-3">
+                  {isHost && (
+                    <button
+                      onClick={handleStartGame}
+                      className="flex-1 py-3.5 bg-fire-600 hover:bg-fire-500 text-white font-bold text-xs rounded-xl shadow transition"
+                    >
+                      🔄 Jogar Novamente nesta Sala
+                    </button>
+                  )}
+                  <button
+                    onClick={onBack}
+                    className="flex-1 py-3.5 bg-stone-100 hover:bg-stone-200 text-stone-800 font-bold text-xs rounded-xl transition"
+                  >
+                    Sair para a Central
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        }
+      }
+
+      return null;
+    }
+
+    // --- RENDER REACT ROOT ---
+    const rootElement = document.getElementById('root');
+    const root = ReactDOM.createRoot(rootElement);
+    root.render(
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    );
+  </script>
+</body>
+</html>
