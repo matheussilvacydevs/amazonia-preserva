@@ -444,7 +444,7 @@
           await supabase
             .from("quiz_players")
             .delete()
-            .eq("room_id", room.id)
+            .eq("room_id", room.__id)
             .eq("nickname", cleanNickname);
 
         if (error) {
@@ -485,7 +485,7 @@
           await supabase
             .from("quiz_players")
             .update(payload)
-            .eq("room_id", room.id);
+            .eq("room_id", room.__id);
 
         if (error) {
           console.error(
