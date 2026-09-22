@@ -115,6 +115,7 @@
 
       return {
         __id: room.id,
+        __hostId: room.host_id,
 
         pin: room.pin,
         hostName: room.host_name,
@@ -169,6 +170,17 @@
         this.currentUser = session.user;
 
         return this.currentUser;
+      },
+
+      async isCurrentUserHost(room) {
+        const user = await this.initAuth();
+
+        return Boolean(
+          room &&
+          room.__hostId &&
+          user &&
+          room.__hostId === user.id
+        );
       },
 
       async getRoomRow(pin) {
@@ -329,202 +341,200 @@
         return await this.getRoom(pin);
       },
 
-      async syncPlayers(
-        room,
-        desiredPlayers
-      ) {
-        const user =
-          await this.initAuth();
+      async joinRoom(pin, nickname) {
+        const user = await this.initAuth();
 
-        const current =
-          await this.getPlayers(room.id);
+        const room = await this.getRoomRow(pin);
 
-        const currentByName =
-          Object.fromEntries(
-            current.map(p => [
-              p.nickname,
-              p
-            ])
-          );
-
-        const desiredNames =
-          Object.keys(
-            desiredPlayers || {}
-          );
-
-        // ----------------------------------------------------
-        // REMOVE jogadores que desapareceram do objeto.
-        // Só funcionará para o próprio jogador ou para o host,
-        // conforme nossas políticas RLS.
-        // ----------------------------------------------------
-
-        for (const existing of current) {
-          if (
-            !desiredNames.includes(
-              existing.nickname
-            )
-          ) {
-            const { error } =
-              await supabase
-                .from("quiz_players")
-                .delete()
-                .eq("id", existing.id);
-
-            if (error) {
-              console.error(
-                "Erro ao remover jogador:",
-                existing.nickname,
-                error
-              );
-              throw error;
-            }
-          }
+        if (!room) {
+          throw new Error("Sala não encontrada.");
         }
 
-        // ----------------------------------------------------
-        // INSERT / UPDATE
-        // ----------------------------------------------------
+        if (room.status !== "lobby") {
+          throw new Error(
+            "Esta partida já começou e não aceita novos jogadores."
+          );
+        }
 
-        for (
-          const nickname
-          of desiredNames
-        ) {
-          const value =
-            desiredPlayers[nickname] || {};
+        const cleanNickname = String(nickname || "").trim();
 
-          const existing =
-            currentByName[nickname];
+        if (!cleanNickname) {
+          throw new Error("Apelido inválido.");
+        }
 
-          const payload = {
-            score:
-              value.score ?? 0,
+        const { data: existingNickname, error: checkError } =
+          await supabase
+            .from("quiz_players")
+            .select("id,user_id")
+            .eq("room_id", room.id)
+            .eq("nickname", cleanNickname)
+            .maybeSingle();
 
-            streak:
-              value.streak ?? 0,
+        if (checkError) {
+          console.error("Erro ao verificar apelido:", checkError);
+          throw checkError;
+        }
 
-            has_answered:
-              value.hasAnswered ?? false,
-
-            selected_answer:
-              value.selectedIdx ?? null,
-
-            is_correct:
-              value.isCorrect ?? null,
-
-            last_points:
-              value.lastPoints ?? 0
-          };
-
-          if (existing) {
-            const { error } =
-              await supabase
-                .from("quiz_players")
-                .update(payload)
-                .eq("id", existing.id);
-
-            if (error) {
-              console.error(
-                "Erro ao atualizar jogador:",
-                nickname,
-                error
-              );
-              throw error;
-            }
-
-            continue;
+        if (existingNickname) {
+          if (existingNickname.user_id === user.id) {
+            return await this.getRoom(pin);
           }
 
-          /*
-           * Novo jogador:
-           * somente o próprio usuário pode criar
-           * sua linha devido ao RLS.
-           */
-          const { error } =
-            await supabase
-              .from("quiz_players")
-              .insert({
-                room_id: room.id,
+          throw new Error(
+            "Esse apelido já está sendo usado nessa sala."
+          );
+        }
 
-                user_id: user.id,
+        const { error } =
+          await supabase
+            .from("quiz_players")
+            .insert({
+              room_id: room.id,
+              user_id: user.id,
+              nickname: cleanNickname,
+              score: 0,
+              streak: 0,
+              has_answered: false,
+              selected_answer: null,
+              is_correct: null,
+              last_points: 0
+            });
 
-                nickname,
+        if (error) {
+          console.error("Erro ao entrar na sala:", error);
 
-                ...payload
-              });
-
-          if (error) {
-            console.error(
-              "Erro ao adicionar jogador:",
-              nickname,
-              error
+          if (error.code === "23505") {
+            throw new Error(
+              "Esse apelido já está sendo usado nessa sala."
             );
-
-            if (
-              error.code === "23505"
-            ) {
-              throw new Error(
-                "Esse apelido já está sendo usado nessa sala."
-              );
-            }
-
-            throw error;
           }
+
+          throw error;
+        }
+
+        return await this.getRoom(pin);
+      },
+
+      async kickPlayer(
+        room,
+        nickname
+      ) {
+        const user = await this.initAuth();
+
+        if (!room || room.__hostId !== user.id) {
+          throw new Error(
+            "Somente o anfitrião pode remover jogadores."
+          );
+        }
+
+        const cleanNickname =
+          String(nickname || "").trim();
+
+        if (!cleanNickname) {
+          throw new Error("Jogador inválido.");
+        }
+
+        if (cleanNickname === room.hostName) {
+          throw new Error(
+            "O anfitrião não pode remover a si mesmo."
+          );
+        }
+
+        const { error } =
+          await supabase
+            .from("quiz_players")
+            .delete()
+            .eq("room_id", room.id)
+            .eq("nickname", cleanNickname);
+
+        if (error) {
+          console.error(
+            "Erro ao remover jogador:",
+            cleanNickname,
+            error
+          );
+          throw error;
         }
       },
 
-      async updateNestedPlayer(
+      async resetPlayers(
         room,
-        nickname,
-        field,
-        value
+        resetScore = false
       ) {
-        const map = {
-          hasAnswered:
-            "has_answered",
+        const user = await this.initAuth();
 
-          selectedIdx:
-            "selected_answer",
+        if (!room || room.__hostId !== user.id) {
+          throw new Error(
+            "Somente o anfitrião pode reiniciar jogadores."
+          );
+        }
 
-          isCorrect:
-            "is_correct",
-
-          lastPoints:
-            "last_points",
-
-          streak:
-            "streak",
-
-          score:
-            "score"
+        const payload = {
+          has_answered: false,
+          selected_answer: null,
+          is_correct: null,
+          last_points: 0
         };
 
-        const dbField =
-          map[field];
+        if (resetScore) {
+          payload.score = 0;
+          payload.streak = 0;
+        }
 
-        if (!dbField) {
+        const { error } =
+          await supabase
+            .from("quiz_players")
+            .update(payload)
+            .eq("room_id", room.id);
+
+        if (error) {
+          console.error(
+            "Erro ao reiniciar jogadores:",
+            error
+          );
+          throw error;
+        }
+      },
+
+      async updateCurrentPlayer(
+        room,
+        updates
+      ) {
+        const user = await this.initAuth();
+
+        const allowed = {
+          hasAnswered: "has_answered",
+          selectedIdx: "selected_answer",
+          isCorrect: "is_correct",
+          lastPoints: "last_points",
+          streak: "streak",
+          score: "score"
+        };
+
+        const payload = {};
+
+        for (const [field, value] of Object.entries(updates || {})) {
+          const dbField = allowed[field];
+
+          if (dbField) {
+            payload[dbField] = value;
+          }
+        }
+
+        if (!Object.keys(payload).length) {
           return;
         }
 
         const { error } =
           await supabase
             .from("quiz_players")
-            .update({
-              [dbField]: value
-            })
-            .eq(
-              "room_id",
-              room.id
-            )
-            .eq(
-              "nickname",
-              nickname
-            );
+            .update(payload)
+            .eq("room_id", room.id)
+            .eq("user_id", user.id);
 
         if (error) {
           console.error(
-            "Erro ao atualizar jogador:",
-            nickname,
-            field,
+            "Erro ao atualizar jogador atual:",
             error
           );
           throw error;
@@ -546,59 +556,20 @@
           );
         }
 
-        const roomPayload = {};
+        const user = this.currentUser;
 
-        // Atualização completa dos jogadores
-        if (
-          Object.prototype.hasOwnProperty.call(
-            updateData,
-            "players"
-          )
-        ) {
-          await this.syncPlayers(
-            room,
-            updateData.players
+        if (!user || room.host_id !== user.id) {
+          throw new Error(
+            "Somente o anfitrião pode alterar a partida."
           );
         }
 
-        // Atualizações no formato:
-        // players.Maria.score
-        const nestedUpdates = [];
+        const roomPayload = {};
 
         for (
           const [key, value]
           of Object.entries(updateData)
         ) {
-          if (
-            key.startsWith("players.")
-          ) {
-            const parts =
-              key.split(".");
-
-            if (
-              parts.length >= 3
-            ) {
-              const field =
-                parts.pop();
-
-              parts.shift();
-
-              const nickname =
-                parts.join(".");
-
-              nestedUpdates.push(
-                this.updateNestedPlayer(
-                  room,
-                  nickname,
-                  field,
-                  value
-                )
-              );
-            }
-
-            continue;
-          }
-
           switch (key) {
             case "status":
               roomPayload.status =
@@ -634,14 +605,6 @@
                 value;
               break;
           }
-        }
-
-        if (
-          nestedUpdates.length
-        ) {
-          await Promise.all(
-            nestedUpdates
-          );
         }
 
         if (
@@ -2002,20 +1965,9 @@
           return alert('Sala não encontrada! Verifique se o código PIN está correto.');
         }
 
-        const updatedPlayers = {
-          ...roomData.players,
-          [cleanName]: {
-            score: 0,
-            streak: 0,
-            hasAnswered: false,
-            selectedIdx: null,
-            isCorrect: null,
-            lastPoints: 0
-          }
-        };
-
         try {
-          await window.AmazoniaDB.updateRoom(cleanPin, { players: updatedPlayers });
+          await window.AmazoniaDB.joinRoom(cleanPin, cleanName);
+
           setRoomPin(cleanPin);
           setPlayerName(cleanName);
           setViewState('room');
@@ -2030,39 +1982,31 @@
         if (!currentRoom || currentRoom.hostName !== playerName) return;
         if (targetPlayer === playerName) return alert('Você é o anfitrião e não pode se remover!');
 
-        const updatedPlayers = { ...currentRoom.players };
-        delete updatedPlayers[targetPlayer];
-
-        await window.AmazoniaDB.updateRoom(roomPin, { players: updatedPlayers });
+        await window.AmazoniaDB.kickPlayer(
+          currentRoom,
+          targetPlayer
+        );
       };
 
       // Anfitrião Inicia/Reinicia a Partida
       const handleStartGame = async () => {
         if (!currentRoom) return;
 
-        const resetPlayers = {};
-        Object.keys(currentRoom.players || {}).forEach(p => {
-          resetPlayers[p] = {
-            score: 0,
-            streak: 0,
-            hasAnswered: false,
-            selectedIdx: null,
-            isCorrect: null,
-            lastPoints: 0
-          };
-        });
-
         // Se estiver reiniciando no fim da partida, sorteia novas perguntas
         const newQuestions = currentRoom.status === 'finished' 
           ? [...questions].sort(() => Math.random() - 0.5).slice(0, currentRoom.questions.length || qCount)
           : currentRoom.questions;
 
+        await window.AmazoniaDB.resetPlayers(
+          currentRoom,
+          true
+        );
+
         await window.AmazoniaDB.updateRoom(roomPin, {
           status: 'question',
           questions: newQuestions,
           currentQIndex: 0,
-          questionStartTime: Date.now(),
-          players: resetPlayers
+          questionStartTime: Date.now()
         });
       };
 
@@ -2179,7 +2123,10 @@
       }
 
       if (viewState === 'room' && currentRoom) {
-        const isHost = currentRoom.hostName === playerName;
+        const isHost =
+          currentRoom.__hostId ===
+          window.AmazoniaDB.currentUser?.id;
+
         const playerList = Object.keys(currentRoom.players || {});
 
         // LOBBY STATE
@@ -2265,16 +2212,17 @@
             const pointsEarned = isCorrect ? 500 + speedBonus + streakBonus : 0;
             const newScore = (playerInfo.score || 0) + pointsEarned;
 
-            const updatePayload = {
-              [`players.${playerName}.hasAnswered`]: true,
-              [`players.${playerName}.selectedIdx`]: idx,
-              [`players.${playerName}.isCorrect`]: isCorrect,
-              [`players.${playerName}.lastPoints`]: pointsEarned,
-              [`players.${playerName}.streak`]: currentStreak,
-              [`players.${playerName}.score`]: newScore
-            };
-
-            await window.AmazoniaDB.updateRoom(roomPin, updatePayload);
+            await window.AmazoniaDB.updateCurrentPlayer(
+              currentRoom,
+              {
+                hasAnswered: true,
+                selectedIdx: idx,
+                isCorrect,
+                lastPoints: pointsEarned,
+                streak: currentStreak,
+                score: newScore
+              }
+            );
           };
 
           const handleNextMP = async () => {
@@ -2282,22 +2230,15 @@
             const nextIdx = currentRoom.currentQIndex + 1;
 
             if (nextIdx < currentRoom.questions.length) {
-              const resetPlayers = {};
-              Object.keys(currentRoom.players || {}).forEach(p => {
-                resetPlayers[p] = {
-                  ...currentRoom.players[p],
-                  hasAnswered: false,
-                  selectedIdx: null,
-                  isCorrect: null,
-                  lastPoints: 0
-                };
-              });
+              await window.AmazoniaDB.resetPlayers(
+                currentRoom,
+                false
+              );
 
               await window.AmazoniaDB.updateRoom(roomPin, {
                 status: 'question',
                 currentQIndex: nextIdx,
-                questionStartTime: Date.now(),
-                players: resetPlayers
+                questionStartTime: Date.now()
               });
             } else {
               await window.AmazoniaDB.updateRoom(roomPin, { status: 'finished' });
