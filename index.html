@@ -1892,17 +1892,57 @@
         }
       }, [roomPin]);
 
-      // Cronômetro sincronizado
+      // Cronômetro multiplayer sincronizado.
+      // Calcula imediatamente ao trocar de pergunta e depois mantém
+      // a contagem sincronizada com questionStartTime.
       useEffect(() => {
-        if (currentRoom && currentRoom.status === 'question' && currentRoom.questionStartTime) {
-          const interval = setInterval(() => {
-            const elapsed = Math.floor((Date.now() - currentRoom.questionStartTime) / 1000);
-            const remaining = Math.max(0, 35 - elapsed);
-            setTimer(remaining);
-          }, 400);
-          return () => clearInterval(interval);
+        if (
+          !currentRoom ||
+          currentRoom.status !== 'question' ||
+          !currentRoom.questionStartTime
+        ) {
+          return;
         }
-      }, [currentRoom?.status, currentRoom?.questionStartTime, currentRoom?.currentQIndex]);
+
+        const startedAt = Number(currentRoom.questionStartTime);
+
+        if (!Number.isFinite(startedAt) || startedAt <= 0) {
+          console.error(
+            '[MP TIMER] questionStartTime inválido:',
+            currentRoom.questionStartTime
+          );
+          return;
+        }
+
+        const updateTimer = () => {
+          const elapsedMs = Math.max(
+            0,
+            Date.now() - startedAt
+          );
+
+          const remaining = Math.max(
+            0,
+            35 - Math.floor(elapsedMs / 1000)
+          );
+
+          setTimer(remaining);
+        };
+
+        // IMPORTANTE:
+        // não espera o primeiro setInterval.
+        updateTimer();
+
+        const interval =
+          setInterval(updateTimer, 250);
+
+        return () => {
+          clearInterval(interval);
+        };
+      }, [
+        currentRoom?.status,
+        currentRoom?.questionStartTime,
+        currentRoom?.currentQIndex
+      ]);
 
       // Confetti e celebração no pódio
       useEffect(() => {
@@ -2198,12 +2238,44 @@
           const playersArray = Object.entries(currentRoom.players || {});
           const answeredCount = playersArray.filter(([_, p]) => p.hasAnswered).length;
           const totalPlayers = playersArray.length;
-          const timeIsUp = timer === 0;
-          const allAnswered = answeredCount === totalPlayers && totalPlayers > 0;
-          const showResults = timeIsUp || allAnswered;
+          const hasValidStartTime =
+            Number(currentRoom.questionStartTime) > 0;
+
+          const timeIsUp =
+            hasValidStartTime && timer <= 0;
+
+          const allAnswered =
+            answeredCount === totalPlayers &&
+            totalPlayers > 0;
+
+          const showResults =
+            timeIsUp || allAnswered;
 
           const handleAnswerMP = async (idx) => {
-            if (!currentRoom || !playerName || playerInfo.hasAnswered || timeIsUp) return;
+            console.log('[MP CLICK]', {
+              idx,
+              playerName,
+              timer,
+              timeIsUp,
+              hasAnswered: playerInfo.hasAnswered,
+              roomId: currentRoom?.__id,
+              question: currentRoom?.currentQIndex
+            });
+
+            if (!currentRoom || !playerName) {
+              console.error('[MP CLICK] sala/jogador inválido');
+              return;
+            }
+
+            if (playerInfo.hasAnswered) {
+              console.log('[MP CLICK] jogador já respondeu');
+              return;
+            }
+
+            if (timeIsUp) {
+              console.log('[MP CLICK] tempo esgotado');
+              return;
+            }
 
             const isCorrect = idx === currentQ.correctIndex;
             const currentStreak = isCorrect ? (playerInfo.streak || 0) + 1 : 0;
@@ -2212,17 +2284,35 @@
             const pointsEarned = isCorrect ? 500 + speedBonus + streakBonus : 0;
             const newScore = (playerInfo.score || 0) + pointsEarned;
 
-            await window.AmazoniaDB.updateCurrentPlayer(
-              currentRoom,
-              {
-                hasAnswered: true,
-                selectedIdx: idx,
-                isCorrect,
-                lastPoints: pointsEarned,
-                streak: currentStreak,
-                score: newScore
-              }
-            );
+            try {
+              await window.AmazoniaDB.updateCurrentPlayer(
+                currentRoom,
+                {
+                  hasAnswered: true,
+                  selectedIdx: idx,
+                  isCorrect,
+                  lastPoints: pointsEarned,
+                  streak: currentStreak,
+                  score: newScore
+                }
+              );
+
+              console.log(
+                '[MP ANSWER OK]',
+                playerName,
+                idx
+              );
+            } catch (error) {
+              console.error(
+                '[MP ANSWER ERROR]',
+                error
+              );
+
+              alert(
+                error?.message ||
+                'Não foi possível registrar sua resposta.'
+              );
+            }
           };
 
           const handleNextMP = async () => {
