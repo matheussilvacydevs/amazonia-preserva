@@ -634,54 +634,95 @@
         let channel = null;
         let roomId = null;
 
+        // Controle de sincronização.
+        let debounceTimer = null;
+        let refreshSequence = 0;
+        let appliedSequence = 0;
+        let refreshRunning = false;
+        let refreshPending = false;
+
         const refresh = async () => {
           if (!active) return;
 
-          try {
-            const data =
-              await this.getRoom(pin);
+          // Toda solicitação recebe uma sequência.
+          const sequence = ++refreshSequence;
 
+          // Se já existe uma consulta em andamento,
+          // executaremos outra assim que ela terminar.
+          if (refreshRunning) {
+            refreshPending = true;
+            return;
+          }
+
+          refreshRunning = true;
+
+          try {
+            const data = await this.getRoom(pin);
+
+            // Não aplicar dados de uma consulta antiga
+            // se outra sincronização foi solicitada.
             if (
               active &&
-              data
+              data &&
+              sequence === refreshSequence &&
+              sequence > appliedSequence
             ) {
+              appliedSequence = sequence;
               onUpdate(data);
             }
           } catch (e) {
-            console.error(
-              "Erro ao sincronizar sala:",
-              e
-            );
+            if (active) {
+              console.error(
+                "Erro ao sincronizar sala:",
+                e
+              );
+            }
+          } finally {
+            refreshRunning = false;
+
+            // Se houve eventos durante a consulta,
+            // buscar novamente o estado mais recente.
+            if (active && refreshPending) {
+              refreshPending = false;
+              refresh();
+            }
           }
+        };
+
+        // Agrupa eventos recebidos em sequência.
+        const scheduleRefresh = () => {
+          if (!active) return;
+
+          if (debounceTimer !== null) {
+            clearTimeout(debounceTimer);
+          }
+
+          debounceTimer = setTimeout(() => {
+            debounceTimer = null;
+            refresh();
+          }, 120);
         };
 
         const start = async () => {
           try {
             await this.initAuth();
 
-            const room =
-              await this.getRoomRow(pin);
+            if (!active) return;
 
-            if (
-              !active ||
-              !room
-            ) {
-              return;
-            }
+            const room = await this.getRoomRow(pin);
+
+            if (!active || !room) return;
 
             roomId = room.id;
 
-            await refresh();
-
-            channel =
-              supabase.channel(
-                "quiz-room-" +
-                roomId +
-                "-" +
-                Math.random()
-                  .toString(36)
-                  .slice(2)
-              );
+            // Registrar o Realtime antes da primeira
+            // consulta para reduzir eventos perdidos.
+            channel = supabase.channel(
+              "quiz-room-" +
+              roomId +
+              "-" +
+              Math.random().toString(36).slice(2)
+            );
 
             channel.on(
               "postgres_changes",
@@ -689,11 +730,9 @@
                 event: "*",
                 schema: "public",
                 table: "quiz_rooms",
-                filter:
-                  "id=eq." +
-                  roomId
+                filter: "id=eq." + roomId
               },
-              refresh
+              scheduleRefresh
             );
 
             channel.on(
@@ -702,53 +741,63 @@
                 event: "*",
                 schema: "public",
                 table: "quiz_players",
-                filter:
-                  "room_id=eq." +
-                  roomId
+                filter: "room_id=eq." + roomId
               },
-              refresh
+              scheduleRefresh
             );
 
-            channel.subscribe(
-              status => {
-                console.log(
-                  "Supabase Realtime:",
-                  status
-                );
+            channel.subscribe(status => {
+              if (!active) return;
+
+              console.log(
+                "Supabase Realtime:",
+                status
+              );
+
+              // Ao conectar ou reconectar, buscar
+              // novamente o estado completo da sala.
+              if (status === "SUBSCRIBED") {
+                scheduleRefresh();
               }
-            );
+            });
+
+            await refresh();
           } catch (e) {
-            console.error(
-              "Falha no Realtime:",
-              e
-            );
+            if (active) {
+              console.error(
+                "Falha no Realtime:",
+                e
+              );
+            }
           }
         };
 
         start();
 
-        /*
-         * Realtime é o mecanismo principal.
-         * Polling é apenas fallback caso uma conexão móvel
-         * perca temporariamente o WebSocket.
-         */
-        const fallback =
-          setInterval(
-            refresh,
-            5000
-          );
+        // Polling de segurança: usa o mesmo controle
+        // de sincronização do Realtime.
+        const fallback = setInterval(() => {
+          scheduleRefresh();
+        }, 5000);
 
         return () => {
           active = false;
 
-          clearInterval(
-            fallback
-          );
+          // Invalidar qualquer consulta pendente.
+          refreshSequence++;
+
+          clearInterval(fallback);
+
+          if (debounceTimer !== null) {
+            clearTimeout(debounceTimer);
+            debounceTimer = null;
+          }
+
+          refreshPending = false;
 
           if (channel) {
-            supabase.removeChannel(
-              channel
-            );
+            supabase.removeChannel(channel);
+            channel = null;
           }
         };
       }
