@@ -496,14 +496,21 @@
           await supabase
             .from("quiz_players")
             .update(payload)
-            .eq("room_id", room.__id);
+            .eq("room_id", room.__id)
+            .select("id");
 
         if (error) {
-          console.error(
-            "Erro ao reiniciar jogadores:",
-            error
-          );
+          console.error("Erro ao reiniciar jogadores:", error);
           throw error;
+        }
+
+        const actualPlayers = await this.getPlayers(room.__id);
+
+        if (actualPlayers.some(p => p.has_answered)) {
+          throw new Error(
+            "O banco não permitiu reiniciar todos os jogadores. " +
+            "Verifique a política UPDATE de quiz_players para o anfitrião."
+          );
         }
       },
 
@@ -1845,6 +1852,76 @@
       const [copiedPin, setCopiedPin] = useState(false);
       const submittingAnswer = useRef(false);
       const [answerPending, setAnswerPending] = useState(false);
+      const advancingRef = useRef(false);
+
+      const autoAdvanceKey =
+        currentRoom?.__id + ':' +
+        currentRoom?.currentQIndex + ':' +
+        currentRoom?.questionStartTime;
+
+      const hostForAuto = Boolean(
+        currentRoom &&
+        currentRoom.__hostId === window.AmazoniaDB?.currentUser?.id
+      );
+
+      const playersForAuto =
+        Object.values(currentRoom?.players || {});
+
+      const allAnsweredForAuto =
+        playersForAuto.length > 0 &&
+        playersForAuto.every(p => p.hasAnswered);
+
+      const resultForAuto =
+        currentRoom?.status === 'question' &&
+        (timer <= 0 || allAnsweredForAuto);
+
+      useEffect(() => {
+        if (!hostForAuto || !resultForAuto || !currentRoom) return;
+
+        const roomSnapshot = currentRoom;
+
+        const timeout = setTimeout(async () => {
+          if (advancingRef.current) return;
+
+          advancingRef.current = true;
+
+          try {
+            const latest =
+              await window.AmazoniaDB.getRoom(roomSnapshot.pin);
+
+            if (
+              !latest ||
+              latest.status !== 'question' ||
+              latest.currentQIndex !== roomSnapshot.currentQIndex ||
+              latest.questionStartTime !== roomSnapshot.questionStartTime
+            ) {
+              return;
+            }
+
+            const next = latest.currentQIndex + 1;
+
+            if (next < latest.questions.length) {
+              await window.AmazoniaDB.resetPlayers(latest, false);
+
+              await window.AmazoniaDB.updateRoom(latest.pin, {
+                status: 'question',
+                currentQIndex: next,
+                questionStartTime: Date.now()
+              });
+            } else {
+              await window.AmazoniaDB.updateRoom(latest.pin, {
+                status: 'finished'
+              });
+            }
+          } catch (err) {
+            console.error('[MP AUTO NEXT]', err);
+          } finally {
+            advancingRef.current = false;
+          }
+        }, 4000);
+
+        return () => clearTimeout(timeout);
+      }, [hostForAuto, resultForAuto, autoAdvanceKey]);
       useEffect(() => {
         submittingAnswer.current = false;
         setAnswerPending(false);
@@ -2203,16 +2280,17 @@
         // QUESTION STATE IN MULTIPLAYER
         if (currentRoom.status === 'question') {
           const currentQ = currentRoom.questions[currentRoom.currentQIndex];
-          const playerInfo = currentRoom.players?.[playerName] || {};
+          const myUserId = window.AmazoniaDB?.currentUser?.id;
+          const playerInfo =
+            Object.values(currentRoom.players || {})
+              .find(p => p.__userId === myUserId) || {};
           const playersArray = Object.entries(currentRoom.players || {});
           const answeredCount = playersArray.filter(([_, p]) => p.hasAnswered).length;
           const totalPlayers = playersArray.length;
           const hasValidStartTime =
             Number(currentRoom.questionStartTime) > 0;
 
-          const liveRemaining = hasValidStartTime
-            ? Math.max(0, 35 - Math.floor(Math.max(0, Date.now() - Number(currentRoom.questionStartTime)) / 1000))
-            : 35;
+          const liveRemaining = timer;
           const timeIsUp = hasValidStartTime && liveRemaining <= 0;
 
           const allAnswered =
@@ -2220,7 +2298,7 @@
             totalPlayers > 0;
 
           const showResults =
-            timeIsUp || allAnswered;
+            timeIsUp || (allAnswered && playerInfo.hasAnswered);
 
           const handleAnswerMP = async (idx) => {
             console.log('[MP CLICK]', {
@@ -2287,22 +2365,43 @@
           };
 
           const handleNextMP = async () => {
-            if (!isHost) return;
-            const nextIdx = currentRoom.currentQIndex + 1;
+            if (!isHost || advancingRef.current) return;
 
-            if (nextIdx < currentRoom.questions.length) {
-              await window.AmazoniaDB.resetPlayers(
-                currentRoom,
-                false
-              );
+            advancingRef.current = true;
 
-              await window.AmazoniaDB.updateRoom(roomPin, {
-                status: 'question',
-                currentQIndex: nextIdx,
-                questionStartTime: Date.now()
-              });
-            } else {
-              await window.AmazoniaDB.updateRoom(roomPin, { status: 'finished' });
+            try {
+              const latest =
+                await window.AmazoniaDB.getRoom(roomPin);
+
+              if (
+                !latest ||
+                latest.status !== 'question' ||
+                latest.currentQIndex !== currentRoom.currentQIndex ||
+                latest.questionStartTime !== currentRoom.questionStartTime
+              ) {
+                return;
+              }
+
+              const nextIdx = latest.currentQIndex + 1;
+
+              if (nextIdx < latest.questions.length) {
+                await window.AmazoniaDB.resetPlayers(latest, false);
+
+                await window.AmazoniaDB.updateRoom(roomPin, {
+                  status: 'question',
+                  currentQIndex: nextIdx,
+                  questionStartTime: Date.now()
+                });
+              } else {
+                await window.AmazoniaDB.updateRoom(roomPin, {
+                  status: 'finished'
+                });
+              }
+            } catch (err) {
+              console.error('[MP NEXT]', err);
+              alert(err?.message || 'Não foi possível avançar.');
+            } finally {
+              advancingRef.current = false;
             }
           };
 
@@ -2439,7 +2538,7 @@
                       </button>
                     ) : (
                       <p className="text-xs text-center font-semibold text-stone-500 italic animate-pulse">
-                        Aguardando o anfitrião {currentRoom.hostName} avançar...
+                        Próxima pergunta automática em alguns segundos...
                       </p>
                     )}
                   </div>
