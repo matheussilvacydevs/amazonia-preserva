@@ -18,3 +18,4 @@ node_modules/
 # Backups locais
 *.bak-*
 *.backup*
+next.config.mjs
