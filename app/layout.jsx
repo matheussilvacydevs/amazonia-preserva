@@ -1,0 +1,1 @@
+import "./globals.css";export const metadata={title:"Amazônia Preserva",description:"Educação ambiental e quiz multiplayer"};export default function RootLayout({children}){return <html lang="pt-BR"><body>{children}</body></html>}

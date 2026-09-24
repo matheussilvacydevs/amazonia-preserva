@@ -1,0 +1,607 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');@import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css');@tailwind base;@tailwind components;@tailwind utilities;body{font-family:Inter,system-ui,sans-serif}button:disabled{cursor:not-allowed;opacity:.65}
+
+/* =========================================================
+   AMAZÔNIA PRESERVA — LIGHT / DARK THEME
+   ========================================================= */
+
+html {
+  color-scheme: light;
+}
+
+html.dark-theme {
+  color-scheme: dark;
+}
+
+.site-shell {
+  transition:
+    background-color .45s ease,
+    color .45s ease;
+}
+
+
+/* ---------- THEME SWITCH ---------- */
+
+.theme-switch {
+  position: relative;
+  width: 74px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  cursor: pointer;
+  flex-shrink: 0;
+  background: transparent;
+  opacity: 1 !important;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.theme-sky {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, #68c9ff 0%, #a9e4ff 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,.30),
+    0 4px 14px rgba(0,0,0,.18);
+  transition: background .55s ease;
+}
+
+.theme-orb {
+  position: absolute;
+  z-index: 5;
+  width: 28px;
+  height: 28px;
+  left: 4px;
+  top: 4px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  transform: translateX(0);
+  transition:
+    transform .55s cubic-bezier(.22,1,.36,1),
+    background .45s ease,
+    box-shadow .45s ease;
+  background: #ffd84d;
+  box-shadow:
+    0 0 0 3px rgba(255,220,74,.16),
+    0 0 13px rgba(255,211,51,.75);
+}
+
+.theme-sun,
+.theme-moon {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  transition:
+    opacity .35s ease,
+    transform .55s cubic-bezier(.22,1,.36,1);
+}
+
+.theme-sun {
+  font-size: 22px;
+  line-height: 1;
+  color: #fff5a6;
+  opacity: 1;
+  transform: rotate(0deg) scale(1);
+}
+
+.theme-moon {
+  font-size: 25px;
+  line-height: 1;
+  color: #fffbdc;
+  opacity: 0;
+  transform: rotate(-70deg) scale(.4);
+}
+
+.theme-cloud {
+  position: absolute;
+  z-index: 3;
+  color: rgba(255,255,255,.95);
+  line-height: 1;
+  filter: drop-shadow(0 1px 1px rgba(0,0,0,.08));
+  transition:
+    opacity .4s ease,
+    transform .55s ease;
+}
+
+.cloud-one {
+  font-size: 20px;
+  right: 5px;
+  bottom: 0;
+}
+
+.cloud-two {
+  font-size: 14px;
+  right: 24px;
+  top: -1px;
+  opacity: .75;
+}
+
+.theme-stars {
+  position: absolute;
+  right: 8px;
+  top: 7px;
+  color: #fff8b8;
+  font-size: 11px;
+  letter-spacing: 1px;
+  opacity: 0;
+  transform: translateY(7px);
+  transition:
+    opacity .45s ease,
+    transform .55s ease;
+}
+
+
+/* ---------- DARK SWITCH STATE ---------- */
+
+.theme-switch.is-dark .theme-sky {
+  background:
+    linear-gradient(180deg, #07152f 0%, #18365d 100%);
+}
+
+.theme-switch.is-dark .theme-orb {
+  transform: translateX(38px);
+  background: #e9edff;
+  box-shadow:
+    0 0 0 3px rgba(217,225,255,.10),
+    0 0 14px rgba(202,214,255,.50);
+}
+
+.theme-switch.is-dark .theme-sun {
+  opacity: 0;
+  transform: rotate(100deg) scale(.35);
+}
+
+.theme-switch.is-dark .theme-moon {
+  opacity: 1;
+  transform: rotate(0deg) scale(1);
+}
+
+.theme-switch.is-dark .theme-cloud {
+  opacity: 0;
+  transform: translateX(-14px) translateY(7px);
+}
+
+.theme-switch.is-dark .theme-stars {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+
+/* ---------- MOBILE ---------- */
+
+@media (max-width: 1023px) {
+  .theme-switch {
+    width: 42px;
+    height: 42px;
+  }
+
+  .theme-sky {
+    background: rgba(255,255,255,.09);
+    border: 1px solid rgba(255,255,255,.12);
+  }
+
+  .theme-orb {
+    width: 32px;
+    height: 32px;
+    left: 5px;
+    top: 5px;
+  }
+
+  .theme-switch.is-dark .theme-orb {
+    transform: none;
+  }
+
+  .theme-cloud,
+  .theme-stars {
+    display: none;
+  }
+
+  .theme-sun {
+    font-size: 24px;
+  }
+
+  .theme-moon {
+    font-size: 27px;
+  }
+}
+
+
+/* =========================================================
+   DARK THEME — SITE CONTENT
+   ========================================================= */
+
+.dark-theme .site-shell {
+  background: #090d0b !important;
+  color: #e7ebe8 !important;
+}
+
+.dark-theme main {
+  background:
+    radial-gradient(circle at 50% 0%,
+      rgba(20,83,45,.13),
+      transparent 36%),
+    #090d0b;
+}
+
+.dark-theme .bg-white {
+  background-color: #111713 !important;
+}
+
+.dark-theme .bg-stone-50 {
+  background-color: #0d120f !important;
+}
+
+.dark-theme .bg-stone-100 {
+  background-color: #18201b !important;
+}
+
+.dark-theme .bg-amazon-50 {
+  background-color: #0c2116 !important;
+}
+
+.dark-theme .bg-amazon-100 {
+  background-color: #123622 !important;
+}
+
+.dark-theme .text-stone-900,
+.dark-theme .text-stone-800 {
+  color: #edf2ee !important;
+}
+
+.dark-theme .text-stone-700,
+.dark-theme .text-stone-600 {
+  color: #bac4bd !important;
+}
+
+.dark-theme .text-stone-500 {
+  color: #8f9c94 !important;
+}
+
+.dark-theme .text-amazon-950,
+.dark-theme .text-amazon-900 {
+  color: #d7f5df !important;
+}
+
+.dark-theme .text-amazon-800,
+.dark-theme .text-amazon-700 {
+  color: #65d78a !important;
+}
+
+.dark-theme .border-stone-200 {
+  border-color: #263129 !important;
+}
+
+.dark-theme .border-amazon-200,
+.dark-theme .border-amazon-300 {
+  border-color: #245c36 !important;
+}
+
+.dark-theme input,
+.dark-theme select,
+.dark-theme textarea {
+  color: #f0f4f1 !important;
+  background: #0c120e !important;
+  border-color: #344039 !important;
+}
+
+.dark-theme input::placeholder,
+.dark-theme textarea::placeholder {
+  color: #758078 !important;
+}
+
+.dark-theme .shadow-sm,
+.dark-theme .shadow-xl,
+.dark-theme .shadow-2xl {
+  --tw-shadow-color: rgba(0,0,0,.42);
+}
+
+.dark-theme footer {
+  background: #050806 !important;
+}
+
+
+/* Smooth visual transition without affecting layout */
+.site-shell main,
+.site-shell section,
+.site-shell footer,
+.site-shell input,
+.site-shell select,
+.site-shell textarea {
+  transition:
+    background-color .35s ease,
+    border-color .35s ease,
+    color .35s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-sky,
+  .theme-orb,
+  .theme-sun,
+  .theme-moon,
+  .theme-cloud,
+  .theme-stars,
+  .site-shell,
+  .site-shell * {
+    transition-duration: .01ms !important;
+  }
+}
+
+/* =========================================================
+   FIX VISUAL — SOL E LUA DO THEME SWITCH
+   ========================================================= */
+
+/* Esconde os caracteres antigos, mas mantém os elementos */
+.theme-sun,
+.theme-moon {
+  font-size: 0 !important;
+  width: 22px;
+  height: 22px;
+}
+
+/* SOL */
+.theme-sun {
+  opacity: 1;
+  border-radius: 50%;
+  background: #ffd43b;
+  box-shadow:
+    0 -10px 0 -8px #ffd43b,
+    0 10px 0 -8px #ffd43b,
+    10px 0 0 -8px #ffd43b,
+    -10px 0 0 -8px #ffd43b,
+    7px 7px 0 -8px #ffd43b,
+    -7px -7px 0 -8px #ffd43b,
+    7px -7px 0 -8px #ffd43b,
+    -7px 7px 0 -8px #ffd43b,
+    0 0 8px rgba(255, 212, 59, .85);
+}
+
+/* LUA CRESCENTE */
+.theme-moon {
+  opacity: 0;
+  border-radius: 50%;
+  background: #fff7cf;
+  box-shadow:
+    6px -2px 0 0 #aeb9dc,
+    0 0 9px rgba(235, 241, 255, .75);
+}
+
+/* Retira o fundo amarelo/branco do próprio knob.
+   Agora o astro é quem aparece. */
+.theme-orb {
+  background: rgba(255,255,255,.92) !important;
+}
+
+/* NOITE */
+.theme-switch.is-dark .theme-orb {
+  background: #273759 !important;
+}
+
+.theme-switch.is-dark .theme-sun {
+  opacity: 0 !important;
+  transform: rotate(100deg) scale(.25) !important;
+}
+
+.theme-switch.is-dark .theme-moon {
+  opacity: 1 !important;
+  transform: rotate(-18deg) scale(1) !important;
+}
+
+/* DIA */
+.theme-switch:not(.is-dark) .theme-sun {
+  opacity: 1 !important;
+  transform: rotate(0deg) scale(1) !important;
+}
+
+.theme-switch:not(.is-dark) .theme-moon {
+  opacity: 0 !important;
+  transform: rotate(-70deg) scale(.25) !important;
+}
+
+/* No celular deixamos os astros um pouco maiores */
+@media (max-width: 1023px) {
+  .theme-sun,
+  .theme-moon {
+    width: 23px;
+    height: 23px;
+  }
+
+  .theme-orb {
+    overflow: visible;
+  }
+}
+
+/* =========================================================
+   THEME SWITCH — MINIMALISTA FINAL
+   sobrescreve os efeitos anteriores
+   ========================================================= */
+
+.theme-switch {
+  position: relative !important;
+  width: 64px !important;
+  height: 34px !important;
+  padding: 0 !important;
+  border: 1px solid rgba(255,255,255,.20) !important;
+  border-radius: 999px !important;
+  background: #e7e5e4 !important;
+  overflow: hidden !important;
+  cursor: pointer !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+  transition: background-color .3s ease, border-color .3s ease !important;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.theme-sky {
+  position: absolute !important;
+  inset: 0 !important;
+  border-radius: inherit !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Remove completamente decoração antiga */
+.theme-cloud,
+.theme-stars {
+  display: none !important;
+}
+
+/* Bolinha do switch */
+.theme-orb {
+  position: absolute !important;
+  z-index: 5 !important;
+
+  left: 3px !important;
+  top: 3px !important;
+
+  width: 26px !important;
+  height: 26px !important;
+
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+
+  border-radius: 50% !important;
+
+  background: #ffffff !important;
+  box-shadow: 0 1px 4px rgba(0,0,0,.20) !important;
+
+  transform: translateX(0) !important;
+
+  transition:
+    transform .3s ease,
+    background-color .3s ease !important;
+}
+
+/* SOL */
+.theme-sun {
+  position: absolute !important;
+
+  width: auto !important;
+  height: auto !important;
+
+  display: block !important;
+
+  font-size: 18px !important;
+  line-height: 1 !important;
+
+  color: initial !important;
+  background: none !important;
+  box-shadow: none !important;
+
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+/* LUA */
+.theme-moon {
+  position: absolute !important;
+
+  width: auto !important;
+  height: auto !important;
+
+  display: block !important;
+
+  font-size: 20px !important;
+  line-height: 1 !important;
+
+  color: initial !important;
+  background: none !important;
+  box-shadow: none !important;
+
+  opacity: 0 !important;
+  transform: none !important;
+}
+
+
+/* =====================
+   MODO ESCURO
+   ===================== */
+
+.theme-switch.is-dark {
+  background: #172033 !important;
+  border-color: #334155 !important;
+}
+
+.theme-switch.is-dark .theme-orb {
+  transform: translateX(32px) !important;
+  background: #263247 !important;
+}
+
+.theme-switch.is-dark .theme-sun {
+  opacity: 0 !important;
+  transform: none !important;
+}
+
+.theme-switch.is-dark .theme-moon {
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+
+/* =====================
+   MODO CLARO
+   ===================== */
+
+.theme-switch:not(.is-dark) .theme-orb {
+  transform: translateX(0) !important;
+}
+
+.theme-switch:not(.is-dark) .theme-sun {
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+.theme-switch:not(.is-dark) .theme-moon {
+  opacity: 0 !important;
+  transform: none !important;
+}
+
+
+/* =====================
+   CELULAR
+   somente botão redondo
+   ===================== */
+
+@media (max-width: 1023px) {
+
+  .theme-switch {
+    width: 42px !important;
+    height: 42px !important;
+
+    border-radius: 50% !important;
+
+    background: rgba(255,255,255,.08) !important;
+    border: 1px solid rgba(255,255,255,.18) !important;
+  }
+
+  .theme-sky {
+    background: transparent !important;
+  }
+
+  .theme-orb,
+  .theme-switch.is-dark .theme-orb,
+  .theme-switch:not(.is-dark) .theme-orb {
+    left: 0 !important;
+    top: 0 !important;
+
+    width: 100% !important;
+    height: 100% !important;
+
+    background: transparent !important;
+    box-shadow: none !important;
+
+    transform: none !important;
+  }
+
+  .theme-sun {
+    font-size: 23px !important;
+  }
+
+  .theme-moon {
+    font-size: 25px !important;
+  }
+}

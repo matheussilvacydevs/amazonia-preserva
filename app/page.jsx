@@ -1,0 +1,1 @@
+import OriginalSite from "../components/OriginalSite";export default function Home(){return <OriginalSite/>}

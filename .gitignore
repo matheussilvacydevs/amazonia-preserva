@@ -1,0 +1,20 @@
+node_modules
+.next
+.env.local
+*.log
+
+# Local / secrets
+.env
+.env.local
+.env.*.local
+
+# Next
+.next/
+out/
+
+# Dependencies
+node_modules/
+
+# Backups locais
+*.bak-*
+*.backup*
